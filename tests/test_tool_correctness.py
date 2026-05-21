@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from jons_mcp_typescript import server
-from jons_mcp_typescript.exceptions import DocumentSyncError
+from jons_mcp_typescript.exceptions import DocumentSyncError, ProjectLoadError
 from jons_mcp_typescript.tools import linting, unified
 from jons_mcp_typescript.tools.intelligence import restart_server
 from jons_mcp_typescript.tools.language import type_info
@@ -87,6 +87,16 @@ class FakeTypeInfoClient:
             self.documents[uri] = params["contentChanges"][0]["text"]
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
+        if method == "workspace/executeCommand":
+            filepath = params["arguments"][1]["file"]
+            return {
+                "success": True,
+                "body": {
+                    "configFileName": "/project/tsconfig.json",
+                    "languageServiceDisabled": False,
+                    "fileNames": [filepath],
+                },
+            }
         if method == "textDocument/hover":
             return {"contents": {"value": "User"}}
         if method == "textDocument/typeDefinition":
@@ -99,6 +109,16 @@ class FakeTypeInfoClient:
                 ]
             }
         raise AssertionError(f"unexpected request: {method}")
+
+
+class FakeProjectInfoClient:
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def request(self, method: str, params: dict[str, Any]) -> Any:
+        self.calls.append((method, params))
+        return self.response
 
 
 @pytest.fixture
@@ -142,6 +162,8 @@ async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
     server.vtsls = fake_vtsls  # type: ignore[assignment]
     server.current_diagnostics["file:///x.ts"] = []
     server.pending_diagnostics_events["file:///x.ts"] = object()  # type: ignore[assignment]
+    server.loaded_project_configs.add("/project/tsconfig.json")
+    server.project_file_configs["/project/src/main.ts"] = "/project/tsconfig.json"
     try:
         monkeypatch.setattr(
             "jons_mcp_typescript.tools.intelligence.get_daemon",
@@ -154,11 +176,14 @@ async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
         assert fake_daemon.restart_count == 1
         assert server.current_diagnostics == {}
         assert server.pending_diagnostics_events == {}
+        assert server.loaded_project_configs == set()
+        assert server.project_file_configs == {}
         assert "restarted successfully" in result
     finally:
         server.vtsls = None
         server.current_diagnostics.clear()
         server.pending_diagnostics_events.clear()
+        server.clear_project_load_cache()
 
 
 @pytest.mark.asyncio
@@ -177,6 +202,7 @@ async def test_lifespan_shuts_down_vtsls_when_daemon_start_fails(monkeypatch):
         finally:
             server._project_root = None
             server.vtsls = None
+            server.clear_project_load_cache()
             server.daemon = None
 
 
@@ -190,6 +216,65 @@ async def test_open_file_raises_when_disk_sync_fails(tmp_path):
             missing_file,
             missing_file.as_uri(),
         )
+
+
+@pytest.mark.asyncio
+async def test_ensure_project_loaded_requests_project_info_and_caches(tmp_path):
+    source = tmp_path / "src" / "main.ts"
+    sibling = tmp_path / "src" / "other.ts"
+    source.parent.mkdir()
+    source.write_text("export const value = 1;", encoding="utf-8")
+    sibling.write_text("export const other = 2;", encoding="utf-8")
+    config = tmp_path / "tsconfig.json"
+    config.write_text("{}", encoding="utf-8")
+    client = FakeProjectInfoClient(
+        {
+            "success": True,
+            "body": {
+                "configFileName": str(config),
+                "languageServiceDisabled": False,
+                "fileNames": [str(source), str(sibling)],
+            },
+        }
+    )
+
+    server.clear_project_load_cache()
+    try:
+        await server.ensure_project_loaded(client, source)  # type: ignore[arg-type]
+        await server.ensure_project_loaded(client, sibling)  # type: ignore[arg-type]
+
+        assert client.calls == [
+            (
+                "workspace/executeCommand",
+                {
+                    "command": "typescript.tsserverRequest",
+                    "arguments": [
+                        "projectInfo",
+                        {"file": str(source.resolve()), "needFileNameList": True},
+                    ],
+                },
+            )
+        ]
+        assert server.loaded_project_configs == {str(config)}
+        assert server.project_file_configs[str(source.resolve())] == str(config)
+        assert server.project_file_configs[str(sibling.resolve())] == str(config)
+    finally:
+        server.clear_project_load_cache()
+
+
+@pytest.mark.asyncio
+async def test_ensure_project_loaded_rejects_bad_project_info(tmp_path):
+    source = tmp_path / "src" / "main.ts"
+    source.parent.mkdir()
+    source.write_text("export const value = 1;", encoding="utf-8")
+    client = FakeProjectInfoClient({"success": False})
+
+    server.clear_project_load_cache()
+    try:
+        with pytest.raises(ProjectLoadError, match="invalid projectInfo response"):
+            await server.ensure_project_loaded(client, source)  # type: ignore[arg-type]
+    finally:
+        server.clear_project_load_cache()
 
 
 @pytest.mark.asyncio

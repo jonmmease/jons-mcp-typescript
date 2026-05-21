@@ -183,7 +183,6 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 | Tool | Purpose |
 |------|---------|
-| `workspace_symbols` | Search for types/functions across the project by name |
 | `document_symbols` | List all symbols defined in a file |
 | `definition` | Jump to where a symbol is defined |
 | `type_definition` | Jump to the type definition of a symbol |

@@ -11,6 +11,7 @@ from fastmcp import Context
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
 from ..server import (
     close_file,
+    ensure_project_loaded,
     ensure_vtsls_indexed,
     is_project_file_uri,
     mcp,
@@ -43,6 +44,7 @@ async def definition(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/definition",
             {
@@ -83,6 +85,7 @@ async def type_definition(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/typeDefinition",
             {
@@ -123,6 +126,7 @@ async def implementation(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/implementation",
             {
@@ -169,6 +173,7 @@ async def references(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/references",
             {
@@ -200,54 +205,6 @@ async def references(
 # =============================================================================
 # Symbol Tools
 # =============================================================================
-
-
-@mcp.tool()
-async def workspace_symbols(
-    query: str,
-    limit: int = DEFAULT_LIMIT,
-    offset: int = DEFAULT_OFFSET,
-    ctx: Context | None = None,
-) -> dict:
-    """Search for types/functions across the project by name.
-
-    Args:
-        query: Search query string
-        limit: Maximum results to return
-        offset: Number of results to skip
-
-    Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
-    """
-    client = await ensure_vtsls_indexed()
-
-    result = await client.request(
-        "workspace/symbol",
-        {"query": query},
-    )
-
-    if not result:
-        return {
-            "items": [],
-            "totalItems": 0,
-            "offset": offset,
-            "limit": limit,
-            "hasMore": False,
-        }
-
-    # Sort by name, then URI, then line
-    def workspace_symbol_sort_key(symbol: dict) -> tuple:
-        name = symbol.get("name", "")
-        location = symbol.get("location", {})
-        uri = location.get("uri", "")
-        start = location.get("range", {}).get("start", {})
-        line = start.get("line", 0)
-        return (name.lower(), uri, line)
-
-    sorted_items = sorted(result, key=workspace_symbol_sort_key)
-
-    # Apply pagination
-    paginated, metadata = apply_pagination(sorted_items, offset, limit)
-    return {"items": paginated, **metadata}
 
 
 @mcp.tool()
@@ -358,6 +315,7 @@ async def symbol_info(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/hover",
             {
@@ -425,6 +383,8 @@ async def type_info(
     opened_uris = [file_uri]
 
     try:
+        await ensure_project_loaded(client, project_file.path)
+
         # Step 1: Get type info from hover
         hover_result = await client.request(
             "textDocument/hover",

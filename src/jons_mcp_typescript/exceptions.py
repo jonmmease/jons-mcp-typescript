@@ -34,6 +34,11 @@ class DocumentSyncError(Exception):
     pass
 
 
+class ProjectLoadError(Exception):
+    """Exception raised when vtsls cannot load the TypeScript project graph."""
+    pass
+
+
 class VtslsNotFoundError(Exception):
     """Exception raised when vtsls executable is not found."""
     pass

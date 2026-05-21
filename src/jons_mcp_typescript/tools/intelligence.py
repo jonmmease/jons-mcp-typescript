@@ -9,6 +9,7 @@ from ..server import (
     close_file,
     current_diagnostics,
     document_states,
+    ensure_project_loaded,
     ensure_vtsls_indexed,
     get_daemon,
     mcp,
@@ -106,6 +107,8 @@ async def rename(
     await open_file(client, project_file.path, file_uri)
 
     try:
+        await ensure_project_loaded(client, project_file.path)
+
         # Optional: Validate rename is possible
         try:
             prepare_result = await client.request(
@@ -156,6 +159,7 @@ async def restart_server(ctx: Context | None = None) -> str:
     current_diagnostics.clear()
     document_states.clear()
     pending_diagnostics_events.clear()
+    server_state.clear_project_load_cache()
 
     # Restart the language server and daemon.
     await client.restart()

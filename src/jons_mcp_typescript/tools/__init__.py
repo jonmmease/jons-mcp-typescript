@@ -7,7 +7,6 @@ Navigation & Discovery:
     - type_definition: Jump to the type definition of a symbol
     - implementation: Find implementations of interfaces/abstract classes
     - references: Find all usages of a symbol
-    - workspace_symbols: Search for types/functions across the project
     - document_symbols: List all symbols defined in a file
 
 Information:
@@ -50,7 +49,6 @@ from .language import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 from .linting import get_eslint_config, lint_code
 from .unified import check_all, fix_all
@@ -61,7 +59,6 @@ __all__ = [
     "type_definition",
     "implementation",
     "references",
-    "workspace_symbols",
     "document_symbols",
     # Information
     "symbol_info",

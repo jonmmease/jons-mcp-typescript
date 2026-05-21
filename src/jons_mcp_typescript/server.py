@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 
 from .constants import DIAGNOSTICS_TIMEOUT
 from .daemon_client import FormatterLinterDaemon
-from .exceptions import DocumentSyncError, VtslsNotInitializedError
+from .exceptions import DocumentSyncError, ProjectLoadError, VtslsNotInitializedError
 from .lsp_client import VtslsClient
 from .utils import resolve_project_path
 
@@ -66,6 +66,8 @@ current_diagnostics: dict[str, list] = {}  # uri -> diagnostics
 document_states: dict[str, DocumentState] = {}  # uri -> document state for version tracking
 pending_diagnostics_events: dict[str, asyncio.Event] = {}  # uri -> event for waiting
 _project_root: Path | None = None
+loaded_project_configs: set[str] = set()
+project_file_configs: dict[str, str] = {}
 
 
 def get_project_root() -> Path:
@@ -175,6 +177,79 @@ async def ensure_vtsls_indexed(file_path: str | None = None) -> VtslsClient:
     if not vtsls.is_initialized():
         raise VtslsNotInitializedError("vtsls is still initializing")
     return vtsls
+
+
+def clear_project_load_cache() -> None:
+    """Clear cached TypeScript project graph readiness state."""
+    loaded_project_configs.clear()
+    project_file_configs.clear()
+
+
+async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> None:
+    """Ask tsserver to load the configured project containing file_path.
+
+    vtsls can answer project-wide requests before tsserver has fully loaded the
+    relevant configured project. A raw projectInfo request with file names forces
+    tsserver to build the project graph, which makes references, implementations,
+    rename edits, and hover/definition results complete enough to trust.
+
+    Args:
+        client: The initialized VtslsClient.
+        file_path: Absolute path to an already opened/synced source file.
+
+    Raises:
+        ProjectLoadError: If tsserver cannot report a usable project graph.
+    """
+    path = Path(file_path).expanduser().resolve(strict=True)
+    path_key = str(path)
+    cached_config = project_file_configs.get(path_key)
+    if cached_config and cached_config in loaded_project_configs:
+        return
+
+    try:
+        response = await client.request(
+            "workspace/executeCommand",
+            {
+                "command": "typescript.tsserverRequest",
+                "arguments": [
+                    "projectInfo",
+                    {"file": path_key, "needFileNameList": True},
+                ],
+            },
+        )
+    except Exception as exc:
+        raise ProjectLoadError(
+            f"Failed to load TypeScript project for {path_key}: {exc}"
+        ) from exc
+
+    if not isinstance(response, dict) or response.get("success") is not True:
+        raise ProjectLoadError(
+            f"Failed to load TypeScript project for {path_key}: invalid projectInfo response"
+        )
+
+    body = response.get("body")
+    if not isinstance(body, dict):
+        raise ProjectLoadError(
+            f"Failed to load TypeScript project for {path_key}: missing projectInfo body"
+        )
+
+    if body.get("languageServiceDisabled"):
+        raise ProjectLoadError(
+            f"Failed to load TypeScript project for {path_key}: language service disabled"
+        )
+
+    config_file = body.get("configFileName")
+    config_key = str(config_file) if config_file else f"inferred:{path_key}"
+    loaded_project_configs.add(config_key)
+    project_file_configs[path_key] = config_key
+
+    file_names = body.get("fileNames", [])
+    if isinstance(file_names, list):
+        for file_name in file_names:
+            if isinstance(file_name, str):
+                project_file_configs[str(Path(file_name).resolve(strict=False))] = (
+                    config_key
+                )
 
 
 def get_daemon() -> FormatterLinterDaemon:
@@ -365,6 +440,7 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     # Get project root from global state or use current directory
     project_root = get_project_root()
     logger.info(f"Starting MCP server for project: {project_root}")
+    clear_project_load_cache()
 
     try:
         # Initialize vtsls client
@@ -405,6 +481,7 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
             await vtsls.shutdown()
             vtsls = None
 
+        clear_project_load_cache()
         logger.info("MCP server shutdown complete")
 
 
@@ -415,7 +492,6 @@ MCP server providing TypeScript development capabilities via vtsls, Prettier, an
 ## Navigation & Discovery
 | Tool | Purpose |
 |------|---------|
-| workspace_symbols | Search for types/functions across the project by name |
 | document_symbols | List all symbols defined in a file |
 | definition | Jump to where a symbol is defined |
 | type_definition | Jump to the type definition of a symbol |

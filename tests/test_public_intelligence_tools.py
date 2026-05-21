@@ -30,6 +30,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     opened: list[str] = []
     closed: list[str] = []
     ensure_calls: list[str | None] = []
+    project_loads: list[str] = []
 
     async def ensure(file_path: str | None = None) -> FakeIntelligenceClient:
         ensure_calls.append(file_path)
@@ -41,10 +42,14 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     async def close_file(client: FakeIntelligenceClient, uri: str) -> None:
         closed.append(uri)
 
+    async def ensure_project_loaded(client: FakeIntelligenceClient, path: Path) -> None:
+        project_loads.append(str(path))
+
     monkeypatch.setattr(intelligence, "ensure_vtsls_indexed", ensure)
+    monkeypatch.setattr(intelligence, "ensure_project_loaded", ensure_project_loaded)
     monkeypatch.setattr(intelligence, "open_file", open_file)
     monkeypatch.setattr(intelligence, "close_file", close_file)
-    return fake, opened, closed, ensure_calls
+    return fake, opened, closed, ensure_calls, project_loads
 
 
 @pytest.mark.asyncio
@@ -58,9 +63,11 @@ async def test_diagnostics_file_scope_requires_file_path():
 async def test_diagnostics_file_scope_sorts_paginates_and_closes(
     tool_project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    harness: tuple[FakeIntelligenceClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    _fake, opened, closed, ensure_calls = harness
+    _fake, opened, closed, ensure_calls, project_loads = harness
 
     async def wait(uri: str) -> list[dict[str, Any]]:
         return [
@@ -91,6 +98,7 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
     ]
     assert result["hasMore"] is True
     assert ensure_calls == ["src/main.ts"]
+    assert project_loads == []
     assert opened == closed
 
 
@@ -98,9 +106,11 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
 async def test_diagnostics_closes_file_when_wait_fails(
     tool_project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    harness: tuple[FakeIntelligenceClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    _fake, opened, closed, _ensure_calls = harness
+    _fake, opened, closed, _ensure_calls, project_loads = harness
 
     async def wait(uri: str) -> list[dict[str, Any]]:
         raise RuntimeError("diagnostics failed")
@@ -111,6 +121,7 @@ async def test_diagnostics_closes_file_when_wait_fails(
         await intelligence.diagnostics("src/main.ts")
 
     assert opened == closed
+    assert project_loads == []
 
 
 @pytest.mark.asyncio
@@ -145,9 +156,12 @@ async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
 @pytest.mark.asyncio
 async def test_rename_returns_error_when_prepare_rename_rejects(
     tool_project: Path,
-    harness: tuple[FakeIntelligenceClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     fake.responses = [None]
 
     result = await intelligence.rename(
@@ -158,6 +172,7 @@ async def test_rename_returns_error_when_prepare_rename_rejects(
     )
 
     assert result == {"error": "Symbol cannot be renamed"}
+    assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == ["textDocument/prepareRename"]
     assert opened == closed
 
@@ -165,9 +180,12 @@ async def test_rename_returns_error_when_prepare_rename_rejects(
 @pytest.mark.asyncio
 async def test_rename_continues_when_prepare_rename_is_unsupported(
     tool_project: Path,
-    harness: tuple[FakeIntelligenceClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     edit = {"changes": {"file:///project/src/main.ts": []}}
     fake.responses = [RuntimeError("unsupported"), edit]
 
@@ -179,6 +197,7 @@ async def test_rename_continues_when_prepare_rename_is_unsupported(
     )
 
     assert result == edit
+    assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == [
         "textDocument/prepareRename",
         "textDocument/rename",
@@ -197,11 +216,14 @@ async def test_rename_continues_when_prepare_rename_is_unsupported(
 @pytest.mark.asyncio
 async def test_rename_normalizes_failed_results(
     tool_project: Path,
-    harness: tuple[FakeIntelligenceClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
     rename_result: Any,
     expected: dict[str, Any],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     fake.responses = [{"range": {}}, rename_result]
 
     result = await intelligence.rename(
@@ -212,4 +234,5 @@ async def test_rename_normalizes_failed_results(
     )
 
     assert result == expected
+    assert project_loads == [str(source)]
     assert opened == closed

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from jons_mcp_typescript import server as server_state
 from jons_mcp_typescript.daemon_client import FormatterLinterDaemon
 from jons_mcp_typescript.exceptions import (
     DaemonError,
@@ -40,6 +41,7 @@ from jons_mcp_typescript.server import (
     register_diagnostics_event,
     wait_for_diagnostics,
 )
+from jons_mcp_typescript.tools import intelligence, language
 
 # =============================================================================
 # Helpers to check for dependencies
@@ -169,6 +171,50 @@ def link_project_node_modules(project_root: Path) -> None:
         target.symlink_to(source, target_is_directory=True)
 
 
+def position_of(text: str, needle: str, occurrence: int = 1) -> dict[str, int]:
+    """Return a zero-based LSP position for the requested occurrence."""
+    start = -1
+    cursor = 0
+    for _ in range(occurrence):
+        start = text.index(needle, cursor)
+        cursor = start + len(needle)
+    return {
+        "line": text.count("\n", 0, start),
+        "character": start - (text.rfind("\n", 0, start) + 1),
+    }
+
+
+def location_basenames(result: dict | list | None) -> set[str]:
+    """Extract file basenames from LSP locations or location links."""
+    items = result if isinstance(result, list) else ([result] if result else [])
+    basenames = set()
+    for item in items:
+        if isinstance(item, dict):
+            uri = item.get("targetUri") or item.get("uri")
+            if isinstance(uri, str):
+                basenames.add(Path(uri.removeprefix("file://")).name)
+    return basenames
+
+
+def workspace_edit_basenames(edit: dict) -> set[str]:
+    """Extract file basenames from a WorkspaceEdit."""
+    basenames = set()
+    changes = edit.get("changes", {})
+    if isinstance(changes, dict):
+        for uri in changes:
+            basenames.add(Path(uri.removeprefix("file://")).name)
+
+    document_changes = edit.get("documentChanges", [])
+    if isinstance(document_changes, list):
+        for change in document_changes:
+            if isinstance(change, dict):
+                text_document = change.get("textDocument", {})
+                uri = text_document.get("uri") if isinstance(text_document, dict) else None
+                if isinstance(uri, str):
+                    basenames.add(Path(uri.removeprefix("file://")).name)
+    return basenames
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -246,6 +292,81 @@ export function add(a: number, b: number): number {
 '''
         (src_dir / "utils.ts").write_text(utils_ts)
 
+        yield project_root
+
+
+@pytest.fixture
+def cross_file_ts_project() -> Generator[Path, None, None]:
+    """Create a project where project-wide LSP answers require unopened files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        (project_root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "cross-file-project",
+                    "version": "1.0.0",
+                    "type": "module",
+                },
+                indent=2,
+            )
+        )
+        (project_root / "tsconfig.json").write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "target": "ES2020",
+                        "module": "ESNext",
+                        "moduleResolution": "node",
+                        "strict": True,
+                    },
+                    "include": ["src/**/*"],
+                },
+                indent=2,
+            )
+        )
+
+        src_dir = project_root / "src"
+        src_dir.mkdir()
+        (src_dir / "types.ts").write_text(
+            """export interface Service {
+  run(): string;
+}
+
+export class ImplA implements Service {
+  run(): string { return target(); }
+}
+
+export function target(): string {
+  return "ok";
+}
+
+export interface Box {
+  value: string;
+  method(): number;
+}
+
+export const box: Box = { value: "x", method: () => 1 };
+""",
+            encoding="utf-8",
+        )
+        (src_dir / "a.ts").write_text(
+            """import { target, Service, box } from "./types";
+
+export const fromA = target();
+export const serviceA: Service | null = null;
+export const value = box.value;
+""",
+            encoding="utf-8",
+        )
+        (src_dir / "b.ts").write_text(
+            """import { target, Service } from "./types";
+
+export class ImplB implements Service {
+  run(): string { return target(); }
+}
+""",
+            encoding="utf-8",
+        )
         yield project_root
 
 
@@ -920,31 +1041,6 @@ class TestVtslsIntegration:
             await client.shutdown()
 
     @pytest.mark.asyncio
-    async def test_vtsls_workspace_symbols(self, simple_ts_project: Path):
-        """Test workspace symbol search."""
-        client = VtslsClient(simple_ts_project)
-
-        try:
-            await client.start()
-
-            # Wait for initial indexing
-            await asyncio.sleep(2.0)
-
-            # Search for 'greet' symbol
-            result = await client.request(
-                "workspace/symbol",
-                {"query": "greet"},
-            )
-
-            # Should find the greet function
-            assert result is not None
-            assert isinstance(result, list)
-            # Note: workspace/symbol may or may not find results depending on indexing
-
-        finally:
-            await client.shutdown()
-
-    @pytest.mark.asyncio
     async def test_vtsls_diagnostics_notification(self, simple_ts_project: Path):
         """Test receiving diagnostics for type errors."""
         client = VtslsClient(simple_ts_project)
@@ -1005,6 +1101,92 @@ class TestVtslsIntegration:
 
         finally:
             await client.shutdown()
+
+
+@pytest.mark.skipif(not VTSLS_AVAILABLE, reason="vtsls not available")
+class TestProjectGraphReadiness:
+    """Tests that public project-wide tools force tsserver project loading."""
+
+    @pytest.mark.asyncio
+    async def test_project_wide_navigation_loads_unopened_files(
+        self, cross_file_ts_project: Path
+    ):
+        client = VtslsClient(cross_file_ts_project)
+        server_state._project_root = cross_file_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            a_text = (cross_file_ts_project / "src" / "a.ts").read_text()
+            definition_result = await language.definition(
+                "src/a.ts",
+                **position_of(a_text, "target", occurrence=2),
+            )
+            assert location_basenames(definition_result) == {"types.ts"}
+
+            references_result = await language.references(
+                "src/a.ts",
+                include_declaration=True,
+                **position_of(a_text, "target", occurrence=2),
+            )
+            assert location_basenames(references_result["items"]) == {
+                "a.ts",
+                "b.ts",
+                "types.ts",
+            }
+            assert references_result["totalItems"] == 6
+
+            implementation_result = await language.implementation(
+                "src/a.ts",
+                **position_of(a_text, "Service", occurrence=2),
+            )
+            assert location_basenames(implementation_result) == {"b.ts", "types.ts"}
+
+            symbol_info = await language.symbol_info(
+                "src/a.ts",
+                **position_of(a_text, "box", occurrence=2),
+            )
+            assert "Box" in str(symbol_info["content"])
+            assert "(loading...)" not in str(symbol_info["content"])
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+    @pytest.mark.asyncio
+    async def test_rename_includes_unopened_project_files(
+        self, cross_file_ts_project: Path
+    ):
+        client = VtslsClient(cross_file_ts_project)
+        server_state._project_root = cross_file_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            types_text = (cross_file_ts_project / "src" / "types.ts").read_text()
+            rename_result = await intelligence.rename(
+                "src/types.ts",
+                new_name="renamedTarget",
+                **position_of(types_text, "target"),
+            )
+
+            assert workspace_edit_basenames(rename_result) == {
+                "a.ts",
+                "b.ts",
+                "types.ts",
+            }
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
 
 
 # =============================================================================

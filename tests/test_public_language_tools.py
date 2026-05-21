@@ -33,6 +33,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     opened: list[str] = []
     closed: list[str] = []
     ensure_calls: list[str | None] = []
+    project_loads: list[str] = []
 
     async def ensure(file_path: str | None = None) -> FakeLanguageClient:
         ensure_calls.append(file_path)
@@ -44,10 +45,14 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     async def close_file(client: FakeLanguageClient, uri: str) -> None:
         closed.append(uri)
 
+    async def ensure_project_loaded(client: FakeLanguageClient, path: Path) -> None:
+        project_loads.append(str(path))
+
     monkeypatch.setattr(language, "ensure_vtsls_indexed", ensure)
+    monkeypatch.setattr(language, "ensure_project_loaded", ensure_project_loaded)
     monkeypatch.setattr(language, "open_file", open_file)
     monkeypatch.setattr(language, "close_file", close_file)
-    return fake, opened, closed, ensure_calls
+    return fake, opened, closed, ensure_calls, project_loads
 
 
 @pytest.mark.parametrize(
@@ -61,11 +66,14 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_navigation_tools_open_request_and_close(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
     tool: Any,
     lsp_method: str,
 ):
-    fake, opened, closed, ensure_calls = harness
+    fake, opened, closed, ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     location = {
         "uri": "file:///project/src/main.ts",
         "range": {"start": {"line": 2, "character": 4}},
@@ -76,6 +84,7 @@ async def test_navigation_tools_open_request_and_close(
 
     assert result == location
     assert ensure_calls == ["src/main.ts"]
+    assert project_loads == [str(source)]
     assert opened == closed
     assert fake.calls == [
         (
@@ -91,9 +100,12 @@ async def test_navigation_tools_open_request_and_close(
 @pytest.mark.asyncio
 async def test_references_sorts_and_paginates(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     fake.responses["textDocument/references"] = [
         {
             "uri": "file:///project/b.ts",
@@ -124,57 +136,19 @@ async def test_references_sorts_and_paginates(
     ]
     assert [item["offset"] for item in result["items"]] == [1, 2]
     assert result["hasMore"] is False
+    assert project_loads == [str(source)]
     assert opened == closed
     assert fake.calls[0][1]["context"] == {"includeDeclaration": False}
 
 
 @pytest.mark.asyncio
-async def test_workspace_symbols_sorts_and_paginates(
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
-):
-    fake, opened, closed, ensure_calls = harness
-    fake.responses["workspace/symbol"] = [
-        {
-            "name": "Zoo",
-            "location": {
-                "uri": "file:///z.ts",
-                "range": {"start": {"line": 0}},
-            },
-        },
-        {
-            "name": "Alpha",
-            "location": {
-                "uri": "file:///b.ts",
-                "range": {"start": {"line": 2}},
-            },
-        },
-        {
-            "name": "Alpha",
-            "location": {
-                "uri": "file:///a.ts",
-                "range": {"start": {"line": 1}},
-            },
-        },
-    ]
-
-    result = await language.workspace_symbols("a", limit=2, offset=0)
-
-    assert [(item["name"], item["location"]["uri"]) for item in result["items"]] == [
-        ("Alpha", "file:///a.ts"),
-        ("Alpha", "file:///b.ts"),
-    ]
-    assert result["hasMore"] is True
-    assert ensure_calls == [None]
-    assert opened == []
-    assert closed == []
-
-
-@pytest.mark.asyncio
 async def test_document_symbols_flattens_sorts_and_closes(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
     fake.responses["textDocument/documentSymbol"] = [
         {
             "name": "User",
@@ -198,15 +172,19 @@ async def test_document_symbols_flattens_sorts_and_closes(
         ("User", None),
         ("name", "User"),
     ]
+    assert project_loads == []
     assert opened == closed
 
 
 @pytest.mark.asyncio
 async def test_symbol_info_normalizes_hover_content(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
     fake.responses["textDocument/hover"] = {
         "contents": [{"value": "const value: number"}, "docs"],
         "range": {"start": {"line": 0, "character": 0}},
@@ -218,15 +196,18 @@ async def test_symbol_info_normalizes_hover_content(
         "content": "const value: number\ndocs",
         "range": {"start": {"line": 0, "character": 0}},
     }
+    assert project_loads == [str(source)]
     assert opened == closed
 
 
 @pytest.mark.asyncio
 async def test_type_info_extracts_in_root_members_and_restores_document(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
     type_file = tool_project / "src" / "types.ts"
     source.write_text("const user = makeUser();\nuser;\n", encoding="utf-8")
@@ -294,6 +275,7 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         "textDocument/documentSymbol",
         "textDocument/completion",
     ]
+    assert project_loads == [str(source)]
     changed_texts = [
         params["contentChanges"][0]["text"]
         for method, params in fake.notifications
@@ -311,9 +293,11 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
 async def test_type_info_returns_external_source_without_opening_it(
     tool_project: Path,
     tmp_path: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, opened, closed, _ensure_calls = harness
+    fake, opened, closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
     external = tmp_path / "external.ts"
     source.write_text("user;\n", encoding="utf-8")
@@ -332,6 +316,7 @@ async def test_type_info_returns_external_source_without_opening_it(
         "textDocument/typeDefinition",
         "textDocument/completion",
     ]
+    assert project_loads == [str(source)]
     assert opened == [source.as_uri()]
     assert closed == opened
 
@@ -339,9 +324,11 @@ async def test_type_info_returns_external_source_without_opening_it(
 @pytest.mark.asyncio
 async def test_type_info_skips_completion_when_identifier_is_not_safe(
     tool_project: Path,
-    harness: tuple[FakeLanguageClient, list[str], list[str], list[str | None]],
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
 ):
-    fake, _opened, _closed, _ensure_calls = harness
+    fake, _opened, _closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
     source.write_text(";\n", encoding="utf-8")
     fake.responses = {
@@ -359,4 +346,5 @@ async def test_type_info_skips_completion_when_identifier_is_not_safe(
         "textDocument/hover",
         "textDocument/typeDefinition",
     ]
+    assert project_loads == [str(source)]
     assert fake.notifications == []
