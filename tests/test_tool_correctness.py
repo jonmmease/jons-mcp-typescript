@@ -141,8 +141,8 @@ async def test_lint_code_counts_string_severities(monkeypatch, project_file):
 
     result = await linting.lint_code(str(project_file))
 
-    assert result["errors"] == 1
-    assert result["warnings"] == 1
+    assert result.errors == 1
+    assert result.warnings == 1
 
 
 @pytest.mark.asyncio
@@ -151,8 +151,9 @@ async def test_check_all_fails_on_eslint_error(monkeypatch, project_file):
 
     result = await unified.check_all(str(project_file), include_typescript=False)
 
-    assert result["checks"]["eslint"]["passed"] is False
-    assert result["overallPassed"] is False
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["checks"]["eslint"]["passed"] is False
+    assert result_dict["overallPassed"] is False
 
 
 @pytest.mark.asyncio
@@ -293,9 +294,10 @@ async def test_type_info_uses_temporary_dot_completion():
         try:
             result = await type_info("src/main.ts", line=2, character=2)
 
-            assert result["typeName"] == "User"
-            assert result["fields"] == [{"name": "name", "type": "string"}]
-            assert result["methods"]["items"] == [
+            result_dict = result.model_dump(exclude_none=True)
+            assert result_dict["typeName"] == "User"
+            assert result_dict["fields"] == [{"name": "name", "type": "string"}]
+            assert result_dict["methods"]["items"] == [
                 {"name": "greet", "signature": "() => void"}
             ]
         finally:

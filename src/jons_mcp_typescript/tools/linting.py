@@ -5,6 +5,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..exceptions import ESLintConfigError, ESLintPluginError
+from ..schemas import LintCodeResult
 from ..server import get_daemon, mcp, resolve_project_file
 from ..utils import count_eslint_messages
 
@@ -16,7 +17,7 @@ async def lint_code(
     fix: bool = False,
     config_file: str | None = None,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> LintCodeResult:
     """Lower-level ESLint lint/fix operation only.
 
     Prefer check_all for normal checks and fix_all for normal automatic fixes.
@@ -30,7 +31,7 @@ async def lint_code(
         config_file: Optional explicit config file path
 
     Returns:
-        Dictionary with keys:
+        LintCodeResult with:
         - issues: List of lint issues
         - totalIssues: Total number of issues
         - errors: Number of errors
@@ -61,14 +62,14 @@ async def lint_code(
         if error_count == 0 and warning_count == 0:
             error_count, warning_count = count_eslint_messages(messages)
 
-        return {
-            "issues": messages,
-            "totalIssues": len(messages),
-            "errors": error_count,
-            "warnings": warning_count,
-            "fixed": result.get("fixed", False),
-            "fixedCode": result.get("fixedContent") if fix else None,
-        }
+        return LintCodeResult(
+            issues=messages,
+            totalIssues=len(messages),
+            errors=error_count,
+            warnings=warning_count,
+            fixed=result.get("fixed", False),
+            fixedCode=result.get("fixedContent") if fix else None,
+        )
     except Exception as e:
         error_msg = str(e)
         if "Plugin" in error_msg or "plugin" in error_msg:

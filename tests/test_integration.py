@@ -1130,12 +1130,13 @@ class TestProjectGraphReadiness:
                 include_declaration=True,
                 **position_of(a_text, "target", occurrence=2),
             )
-            assert location_basenames(references_result["items"]) == {
+            references_dict = references_result.model_dump(exclude_none=True)
+            assert location_basenames(references_dict["items"]) == {
                 "a.ts",
                 "b.ts",
                 "types.ts",
             }
-            assert references_result["totalItems"] == 6
+            assert references_dict["totalItems"] == 6
 
             implementation_result = await language.implementation(
                 "src/a.ts",
@@ -1147,8 +1148,8 @@ class TestProjectGraphReadiness:
                 "src/a.ts",
                 **position_of(a_text, "box", occurrence=2),
             )
-            assert "Box" in str(symbol_info["content"])
-            assert "(loading...)" not in str(symbol_info["content"])
+            assert "Box" in str(symbol_info.content)
+            assert "(loading...)" not in str(symbol_info.content)
         finally:
             await client.shutdown()
             server_state._project_root = None

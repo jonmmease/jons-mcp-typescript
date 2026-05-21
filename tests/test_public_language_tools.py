@@ -1,10 +1,16 @@
 """Public language/navigation tool behavior tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
+from jons_mcp_typescript.schemas import (
+    DocumentSymbolsResult,
+    ReferencesResult,
+    SymbolInfoResult,
+    TypeInfoResult,
+)
 from jons_mcp_typescript.tools import language
 
 
@@ -53,6 +59,13 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(language, "open_file", open_file)
     monkeypatch.setattr(language, "close_file", close_file)
     return fake, opened, closed, ensure_calls, project_loads
+
+
+def test_language_return_annotations_use_public_models():
+    assert get_type_hints(language.references)["return"] == ReferencesResult
+    assert get_type_hints(language.document_symbols)["return"] == DocumentSymbolsResult
+    assert get_type_hints(language.symbol_info)["return"] == SymbolInfoResult
+    assert get_type_hints(language.type_info)["return"] == TypeInfoResult
 
 
 @pytest.mark.parametrize(
@@ -133,16 +146,17 @@ async def test_references_sorts_and_paginates(
         offset=1,
     )
 
-    assert [item["uri"] for item in result["items"]] == [
+    result_dict = result.model_dump(exclude_none=True)
+    assert [item["uri"] for item in result_dict["items"]] == [
         "file:///project/a.ts",
         "file:///project/b.ts",
     ]
-    assert [item["range"]["start"] for item in result["items"]] == [
+    assert [item["range"]["start"] for item in result_dict["items"]] == [
         {"line": 2, "character": 6},
         {"line": 4, "character": 1},
     ]
-    assert [item["offset"] for item in result["items"]] == [1, 2]
-    assert result["hasMore"] is False
+    assert [item["offset"] for item in result_dict["items"]] == [1, 2]
+    assert result_dict["hasMore"] is False
     assert project_loads == [str(source)]
     assert opened == closed
     assert fake.calls[0][1]["context"] == {"includeDeclaration": False}
@@ -175,11 +189,14 @@ async def test_document_symbols_flattens_sorts_and_closes(
 
     result = await language.document_symbols("src/main.ts")
 
-    assert [(item["name"], item.get("containerName")) for item in result["items"]] == [
+    result_dict = result.model_dump(exclude_none=True)
+    assert [
+        (item["name"], item.get("containerName")) for item in result_dict["items"]
+    ] == [
         ("User", None),
         ("name", "User"),
     ]
-    assert [item["range"]["start"] for item in result["items"]] == [
+    assert [item["range"]["start"] for item in result_dict["items"]] == [
         {"line": 6, "character": 1},
         {"line": 7, "character": 3},
     ]
@@ -203,7 +220,7 @@ async def test_symbol_info_normalizes_hover_content(
 
     result = await language.symbol_info("src/main.ts", line=1, character=7)
 
-    assert result == {
+    assert result.model_dump(exclude_none=True) == {
         "content": "const value: number\ndocs",
         "range": {"start": {"line": 1, "character": 1}},
     }
@@ -277,16 +294,17 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         include_documentation=True,
     )
 
-    assert result["typeName"] == "User"
-    assert result["sourceLocation"] == {
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["typeName"] == "User"
+    assert result_dict["sourceLocation"] == {
         "uri": type_file.as_uri(),
         "range": public_type_range,
     }
-    assert result["fields"] == [
+    assert result_dict["fields"] == [
         {"name": "email", "type": "string", "documentation": "Email docs"},
         {"name": "name", "type": "string"},
     ]
-    assert result["methods"]["items"] == [
+    assert result_dict["methods"]["items"] == [
         {"name": "greet", "signature": "() => string", "documentation": "Greet docs"},
         {"name": "save", "signature": "() => void"},
     ]
@@ -328,9 +346,10 @@ async def test_type_info_infers_type_name_from_string_hover(
 
     result = await language.type_info("src/main.ts", line=1, character=2)
 
-    assert result["typeName"] == "Error"
-    assert result["fields"] == []
-    assert result["methods"]["items"] == []
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["typeName"] == "Error"
+    assert result_dict["fields"] == []
+    assert result_dict["methods"]["items"] == []
     assert project_loads == [str(source)]
     assert opened == [source.as_uri()]
     assert closed == opened
@@ -357,7 +376,8 @@ async def test_type_info_returns_external_source_without_opening_it(
 
     result = await language.type_info("src/main.ts", line=1, character=2)
 
-    assert result["sourceLocation"] == {"uri": external.as_uri(), "range": {}}
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["sourceLocation"] == {"uri": external.as_uri(), "range": {}}
     assert [call[0] for call in fake.calls] == [
         "textDocument/hover",
         "textDocument/typeDefinition",
@@ -386,9 +406,10 @@ async def test_type_info_skips_completion_when_identifier_is_not_safe(
 
     result = await language.type_info("src/main.ts", line=1, character=1)
 
-    assert result["typeName"] == "unknown"
-    assert result["fields"] == []
-    assert result["methods"]["items"] == []
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["typeName"] == "unknown"
+    assert result_dict["fields"] == []
+    assert result_dict["methods"]["items"] == []
     assert [call[0] for call in fake.calls] == [
         "textDocument/hover",
         "textDocument/typeDefinition",

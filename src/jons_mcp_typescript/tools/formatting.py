@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..exceptions import PrettierConfigError, PrettierParseError
+from ..schemas import CheckFormattingResult, FormatCodeResult
 from ..server import get_daemon, mcp, resolve_project_file
 
 
@@ -17,7 +18,7 @@ async def format_code(
     code: str | None = None,
     config_file: str | None = None,
     ctx: Context | None = None,
-) -> dict:
+) -> FormatCodeResult:
     """Lower-level Prettier formatting only.
 
     Prefer fix_all for the normal agent workflow because it runs ESLint fixes
@@ -29,7 +30,7 @@ async def format_code(
         config_file: Optional explicit config file path (currently unused but provided for compatibility)
 
     Returns:
-        Dictionary with keys:
+        FormatCodeResult with:
             - formatted: True if code was successfully formatted
             - code: The formatted code
             - changed: Whether the code changed from the input
@@ -57,11 +58,7 @@ async def format_code(
         formatted_code = result.get("formatted", code)
         changed = formatted_code != code
 
-        return {
-            "formatted": True,
-            "code": formatted_code,
-            "changed": changed,
-        }
+        return FormatCodeResult(formatted=True, code=formatted_code, changed=changed)
     except Exception as e:
         error_msg = str(e)
         if "Parse error" in error_msg or "Parsing" in error_msg:
@@ -77,7 +74,7 @@ async def check_formatting(
     code: str | None = None,
     config_file: str | None = None,
     ctx: Context | None = None,
-) -> dict:
+) -> CheckFormattingResult:
     """Lower-level Prettier formatting check only.
 
     Prefer check_all for the normal agent workflow because it combines
@@ -90,7 +87,7 @@ async def check_formatting(
         config_file: Optional explicit config file path (currently unused but provided for compatibility)
 
     Returns:
-        Dictionary with keys:
+        CheckFormattingResult with:
             - formatted: Whether code is properly formatted
             - message: Human-readable status message
 
@@ -114,12 +111,12 @@ async def check_formatting(
         result = await daemon.check_formatting(str(project_file.path), code)
         is_formatted = result.get("isFormatted", False)
 
-        return {
-            "formatted": is_formatted,
-            "message": "Code is properly formatted"
+        return CheckFormattingResult(
+            formatted=is_formatted,
+            message="Code is properly formatted"
             if is_formatted
             else "Code needs formatting",
-        }
+        )
     except Exception as e:
         error_msg = str(e)
         if "Parse error" in error_msg or "Parsing" in error_msg:

@@ -10,6 +10,12 @@ from typing import Any
 from fastmcp import Context
 
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
+from ..schemas import (
+    DocumentSymbolsResult,
+    ReferencesResult,
+    SymbolInfoResult,
+    TypeInfoResult,
+)
 from ..server import (
     close_file,
     ensure_project_loaded,
@@ -163,7 +169,7 @@ async def references(
     limit: int = DEFAULT_LIMIT,
     offset: int = DEFAULT_OFFSET,
     ctx: Context | None = None,
-) -> dict:
+) -> ReferencesResult:
     """Find all usages of a symbol.
 
     Args:
@@ -174,7 +180,7 @@ async def references(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: Paginated usages. Each item includes a file URI and one-based range.
+    Returns: ReferencesResult. Each item includes a file URI and one-based range.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -194,20 +200,22 @@ async def references(
         )
 
         if not result:
-            return {
-                "items": [],
-                "totalItems": 0,
-                "offset": offset,
-                "limit": limit,
-                "hasMore": False,
-            }
+            return ReferencesResult(
+                items=[],
+                totalItems=0,
+                offset=offset,
+                limit=limit,
+                hasMore=False,
+            )
 
         # Sort by location
         sorted_items = sorted(result, key=location_sort_key)
 
         # Apply pagination
         paginated, metadata = apply_pagination(sorted_items, offset, limit)
-        return {"items": lsp_result_to_public(paginated), **metadata}
+        return ReferencesResult.model_validate(
+            {"items": lsp_result_to_public(paginated), **metadata}
+        )
     finally:
         await close_file(client, file_uri)
 
@@ -223,7 +231,7 @@ async def document_symbols(
     limit: int = DEFAULT_LIMIT,
     offset: int = DEFAULT_OFFSET,
     ctx: Context | None = None,
-) -> dict:
+) -> DocumentSymbolsResult:
     """List all symbols defined in a file.
 
     Args:
@@ -231,7 +239,7 @@ async def document_symbols(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: Paginated symbols. Each item includes its name, kind, and one-based range.
+    Returns: DocumentSymbolsResult with symbol names, kinds, and one-based ranges.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -245,13 +253,13 @@ async def document_symbols(
         )
 
         if not result:
-            return {
-                "items": [],
-                "totalItems": 0,
-                "offset": offset,
-                "limit": limit,
-                "hasMore": False,
-            }
+            return DocumentSymbolsResult(
+                items=[],
+                totalItems=0,
+                offset=offset,
+                limit=limit,
+                hasMore=False,
+            )
 
         # Flatten nested symbols if DocumentSymbol format (has children)
         def flatten_symbols(symbols: list, parent_name: str = "") -> list:
@@ -292,7 +300,9 @@ async def document_symbols(
 
         # Apply pagination
         paginated, metadata = apply_pagination(sorted_items, offset, limit)
-        return {"items": lsp_result_to_public(paginated), **metadata}
+        return DocumentSymbolsResult.model_validate(
+            {"items": lsp_result_to_public(paginated), **metadata}
+        )
     finally:
         await close_file(client, file_uri)
 
@@ -308,7 +318,7 @@ async def symbol_info(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> SymbolInfoResult:
     """Get type signature and docs for any symbol.
 
     Args:
@@ -317,7 +327,7 @@ async def symbol_info(
         character: One-based column on that line.
 
     Returns:
-        Dictionary with 'content' (type signature and docs) and 'range' (one-based source range)
+        SymbolInfoResult with content (type signature and docs) and one-based source range.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -336,11 +346,13 @@ async def symbol_info(
         )
 
         if not result:
-            return {"content": None, "range": None}
+            return SymbolInfoResult(content=None, range=None)
 
         content = _hover_contents_to_text(result.get("contents", {}))
 
-        return {"content": content, "range": lsp_result_to_public(result.get("range"))}
+        return SymbolInfoResult.model_validate(
+            {"content": content, "range": lsp_result_to_public(result.get("range"))}
+        )
     finally:
         await close_file(client, file_uri)
 
@@ -354,7 +366,7 @@ async def type_info(
     offset: int = DEFAULT_OFFSET,
     include_documentation: bool = False,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> TypeInfoResult:
     """Get type name, fields, and methods for a value.
 
     This is the primary tool for understanding what operations are available on a value.
@@ -368,7 +380,7 @@ async def type_info(
         include_documentation: Include JSDoc for each member
 
     Returns:
-        Dictionary with:
+        TypeInfoResult with:
         - typeName: The inferred type name
         - fields: List of field definitions with name and type
         - methods: Paginated list of methods with signatures
@@ -503,12 +515,14 @@ async def type_info(
             methods, offset, limit, add_offset_field=False
         )
 
-        return {
-            "typeName": type_name,
-            "fields": fields,
-            "methods": {"items": paginated_methods, **method_metadata},
-            "sourceLocation": source_location,
-        }
+        return TypeInfoResult.model_validate(
+            {
+                "typeName": type_name,
+                "fields": fields,
+                "methods": {"items": paginated_methods, **method_metadata},
+                "sourceLocation": source_location,
+            }
+        )
     finally:
         # Close all files we opened
         for uri in opened_uris:

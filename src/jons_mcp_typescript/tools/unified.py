@@ -9,6 +9,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..schemas import CheckAllResult, FixAllResult
 from ..server import (
     clear_diagnostics_for_uri,
     close_file,
@@ -30,7 +31,7 @@ async def check_all(
     include_eslint: bool = True,
     include_typescript: bool = True,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> CheckAllResult:
     """Run the preferred combined quality check on a file.
 
     Checks code formatting, linting, and types in parallel and aggregates results.
@@ -42,7 +43,7 @@ async def check_all(
         include_typescript: Check types with TypeScript
 
     Returns:
-        Dictionary with keys:
+        CheckAllResult with:
             - checks: Dict containing results for each check (prettier, eslint, typescript)
             - overallPassed: Whether all checks passed
             - summary: Human-readable summary of check results
@@ -140,11 +141,13 @@ async def check_all(
             summary_parts.append(f"{name}: failed")
     summary = "; ".join(summary_parts)
 
-    return {
-        "checks": checks,
-        "overallPassed": overall_passed,
-        "summary": summary,
-    }
+    return CheckAllResult.model_validate(
+        {
+            "checks": checks,
+            "overallPassed": overall_passed,
+            "summary": summary,
+        }
+    )
 
 
 @mcp.tool()
@@ -154,7 +157,7 @@ async def fix_all(
     include_prettier: bool = True,
     include_eslint: bool = True,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> FixAllResult:
     """Run the preferred automatic fix workflow on a file.
 
     Applies ESLint fixes first, then Prettier formatting. Both are applied
@@ -167,7 +170,7 @@ async def fix_all(
         include_eslint: Apply ESLint fixes
 
     Returns:
-        Dictionary with keys:
+        FixAllResult with:
             - fixes: Dict with status of each fix (prettier, eslint)
             - finalCode: The final fixed code
             - totalChanges: Number of changes made
@@ -221,9 +224,11 @@ async def fix_all(
         project_file.path.write_text(current_code, encoding="utf-8")
         written = True
 
-    return {
-        "fixes": fixes,
-        "finalCode": current_code,
-        "totalChanges": total_changes,
-        "written": written,
-    }
+    return FixAllResult.model_validate(
+        {
+            "fixes": fixes,
+            "finalCode": current_code,
+            "totalChanges": total_changes,
+            "written": written,
+        }
+    )

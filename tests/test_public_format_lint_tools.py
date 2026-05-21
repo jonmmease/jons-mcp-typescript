@@ -1,7 +1,7 @@
 """Public formatting and linting tool behavior tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -10,6 +10,11 @@ from jons_mcp_typescript.exceptions import (
     ESLintPluginError,
     PrettierConfigError,
     PrettierParseError,
+)
+from jons_mcp_typescript.schemas import (
+    CheckFormattingResult,
+    FormatCodeResult,
+    LintCodeResult,
 )
 from jons_mcp_typescript.tools import formatting, linting
 
@@ -66,6 +71,12 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> RecordingDaemon:
     return fake
 
 
+def test_formatter_linter_return_annotations_use_public_models():
+    assert get_type_hints(formatting.format_code)["return"] == FormatCodeResult
+    assert get_type_hints(formatting.check_formatting)["return"] == CheckFormattingResult
+    assert get_type_hints(linting.lint_code)["return"] == LintCodeResult
+
+
 @pytest.mark.asyncio
 async def test_format_code_reads_file_and_normalizes_result(
     tool_project: Path, daemon: RecordingDaemon
@@ -76,7 +87,7 @@ async def test_format_code_reads_file_and_normalizes_result(
 
     result = await formatting.format_code("src/main.ts")
 
-    assert result == {
+    assert result.model_dump() == {
         "formatted": True,
         "code": "const value = 1;\n",
         "changed": True,
@@ -93,8 +104,8 @@ async def test_format_code_accepts_explicit_empty_code_for_missing_file(
 
     result = await formatting.format_code("src/generated.ts", code="")
 
-    assert result["code"] == ""
-    assert result["changed"] is False
+    assert result.code == ""
+    assert result.changed is False
     assert daemon.calls == [("format", (str(target.resolve()), ""))]
 
 
@@ -107,7 +118,10 @@ async def test_check_formatting_returns_status_message(
 
     result = await formatting.check_formatting("src/main.ts", code="let x=1;")
 
-    assert result == {"formatted": False, "message": "Code needs formatting"}
+    assert result.model_dump() == {
+        "formatted": False,
+        "message": "Code needs formatting",
+    }
     assert daemon.calls == [("check_formatting", (str(source.resolve()), "let x=1;"))]
 
 
@@ -157,11 +171,11 @@ async def test_lint_code_reads_file_and_counts_string_severities(
 
     result = await linting.lint_code("src/main.ts", fix=True)
 
-    assert result["totalIssues"] == 2
-    assert result["errors"] == 1
-    assert result["warnings"] == 1
-    assert result["fixed"] is True
-    assert result["fixedCode"] == "const used = 1;\n"
+    assert result.totalIssues == 2
+    assert result.errors == 1
+    assert result.warnings == 1
+    assert result.fixed is True
+    assert result.fixedCode == "const used = 1;\n"
     assert daemon.calls == [("lint", (str(source.resolve()), "const unused = 1;\n", True))]
 
 
@@ -177,9 +191,9 @@ async def test_lint_code_uses_daemon_counts_when_present(daemon: RecordingDaemon
 
     result = await linting.lint_code("src/new.ts", code="const x = 1;")
 
-    assert result["errors"] == 3
-    assert result["warnings"] == 4
-    assert result["fixedCode"] is None
+    assert result.errors == 3
+    assert result.warnings == 4
+    assert result.fixedCode is None
 
 
 @pytest.mark.asyncio

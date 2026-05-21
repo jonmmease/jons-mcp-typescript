@@ -6,7 +6,12 @@ from typing import Any, get_type_hints
 import pytest
 
 from jons_mcp_typescript import server
-from jons_mcp_typescript.schemas import RenamePreviewError, RenamePreviewResult
+from jons_mcp_typescript.schemas import (
+    DiagnosticsResult,
+    RenamePreviewError,
+    RenamePreviewResult,
+    ToolError,
+)
 from jons_mcp_typescript.tools import intelligence
 
 
@@ -26,9 +31,11 @@ class FakeIntelligenceClient:
 
 
 def test_preview_rename_return_annotation_uses_public_models():
-    hints = get_type_hints(intelligence.preview_rename)
+    rename_hints = get_type_hints(intelligence.preview_rename)
+    diagnostics_hints = get_type_hints(intelligence.diagnostics)
 
-    assert hints["return"] == RenamePreviewResult | RenamePreviewError
+    assert rename_hints["return"] == RenamePreviewResult | RenamePreviewError
+    assert diagnostics_hints["return"] == DiagnosticsResult | ToolError
 
 
 @pytest.fixture
@@ -63,7 +70,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 async def test_diagnostics_file_scope_requires_file_path():
     result = await intelligence.diagnostics(scope="file")
 
-    assert result == {"error": "file_path required when scope='file'"}
+    assert result == ToolError(error="file_path required when scope='file'")
 
 
 @pytest.mark.asyncio
@@ -94,8 +101,9 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
 
     result = await intelligence.diagnostics("src/main.ts", limit=1, offset=0)
 
-    assert result["totalItems"] == 2
-    assert result["items"] == [
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["totalItems"] == 2
+    assert result_dict["items"] == [
         {
             "severity": 1,
             "range": {"start": {"line": 2, "character": 1}},
@@ -103,7 +111,7 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
             "offset": 0,
         }
     ]
-    assert result["hasMore"] is True
+    assert result_dict["hasMore"] is True
     assert ensure_calls == ["src/main.ts"]
     assert project_loads == []
     assert opened == closed
@@ -152,11 +160,12 @@ async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
     try:
         result = await intelligence.diagnostics(scope="workspace")
 
-        assert [item["uri"] for item in result["items"]] == [
+        result_dict = result.model_dump(exclude_none=True)
+        assert [item["uri"] for item in result_dict["items"]] == [
             "file:///a.ts",
             "file:///b.ts",
         ]
-        assert [item["range"]["start"] for item in result["items"]] == [
+        assert [item["range"]["start"] for item in result_dict["items"]] == [
             {"line": 2, "character": 1},
             {"line": 3, "character": 1},
         ]

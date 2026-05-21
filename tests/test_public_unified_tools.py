@@ -1,10 +1,11 @@
 """Public unified check/fix tool behavior tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
+from jons_mcp_typescript.schemas import CheckAllResult, FixAllResult
 from jons_mcp_typescript.tools import unified
 
 
@@ -42,6 +43,11 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> UnifiedDaemon:
     return fake
 
 
+def test_unified_return_annotations_use_public_models():
+    assert get_type_hints(unified.check_all)["return"] == CheckAllResult
+    assert get_type_hints(unified.fix_all)["return"] == FixAllResult
+
+
 @pytest.mark.asyncio
 async def test_check_all_prettier_only_reports_formatting_failure(
     tool_project: Path,
@@ -55,11 +61,12 @@ async def test_check_all_prettier_only_reports_formatting_failure(
         include_typescript=False,
     )
 
-    assert result["checks"] == {
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["checks"] == {
         "prettier": {"passed": False, "message": "Needs formatting"}
     }
-    assert result["overallPassed"] is False
-    assert result["summary"] == "prettier: failed"
+    assert result_dict["overallPassed"] is False
+    assert result_dict["summary"] == "prettier: failed"
 
 
 @pytest.mark.asyncio
@@ -79,10 +86,11 @@ async def test_check_all_eslint_only_counts_string_severities(
         include_typescript=False,
     )
 
-    assert result["checks"]["eslint"]["passed"] is False
-    assert result["checks"]["eslint"]["errorCount"] == 1
-    assert result["checks"]["eslint"]["warningCount"] == 1
-    assert result["overallPassed"] is False
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["checks"]["eslint"]["passed"] is False
+    assert result_dict["checks"]["eslint"]["errorCount"] == 1
+    assert result_dict["checks"]["eslint"]["warningCount"] == 1
+    assert result_dict["overallPassed"] is False
 
 
 @pytest.mark.asyncio
@@ -97,11 +105,12 @@ async def test_check_all_normalizes_daemon_exceptions(
         include_typescript=False,
     )
 
-    assert result["checks"]["eslint"] == {
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["checks"]["eslint"] == {
         "passed": False,
         "error": "eslint exploded",
     }
-    assert result["summary"] == "eslint: failed"
+    assert result_dict["summary"] == "eslint: failed"
 
 
 @pytest.mark.asyncio
@@ -150,10 +159,11 @@ async def test_check_all_typescript_branch_uses_fresh_diagnostics(
         include_typescript=True,
     )
 
-    assert result["checks"]["typescript"]["passed"] is False
-    assert result["checks"]["typescript"]["errorCount"] == 1
-    assert result["checks"]["typescript"]["warningCount"] == 1
-    assert result["checks"]["typescript"]["diagnostics"] == [
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["checks"]["typescript"]["passed"] is False
+    assert result_dict["checks"]["typescript"]["errorCount"] == 1
+    assert result_dict["checks"]["typescript"]["warningCount"] == 1
+    assert result_dict["checks"]["typescript"]["diagnostics"] == [
         {
             "severity": 2,
             "message": "warn",
@@ -191,9 +201,10 @@ async def test_fix_all_runs_eslint_then_prettier_without_writing(
 
     result = await unified.fix_all("src/main.ts", write=False)
 
-    assert result["finalCode"] == "const value = 1;\n"
-    assert result["totalChanges"] == 2
-    assert result["written"] is False
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["finalCode"] == "const value = 1;\n"
+    assert result_dict["totalChanges"] == 2
+    assert result_dict["written"] is False
     assert source.read_text(encoding="utf-8") == "const value=1;\n"
     assert [call[0] for call in daemon.calls] == ["lint", "format"]
     assert daemon.calls[1][2] == "const value = 1;\n"
@@ -212,9 +223,10 @@ async def test_fix_all_writes_changed_content(tool_project: Path, daemon: Unifie
         include_eslint=False,
     )
 
-    assert result["fixes"] == {"prettier": {"applied": True}}
-    assert result["totalChanges"] == 1
-    assert result["written"] is True
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["fixes"] == {"prettier": {"applied": True}}
+    assert result_dict["totalChanges"] == 1
+    assert result_dict["written"] is True
     assert source.read_text(encoding="utf-8") == "const value = 1;\n"
 
 
@@ -233,7 +245,8 @@ async def test_fix_all_respects_include_flags_and_unchanged_content(
         include_eslint=False,
     )
 
-    assert result["fixes"] == {"prettier": {"applied": False}}
-    assert result["totalChanges"] == 0
-    assert result["written"] is False
+    result_dict = result.model_dump(exclude_none=True)
+    assert result_dict["fixes"] == {"prettier": {"applied": False}}
+    assert result_dict["totalChanges"] == 0
+    assert result_dict["written"] is False
     assert [call[0] for call in daemon.calls] == ["format"]

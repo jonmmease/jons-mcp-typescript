@@ -7,7 +7,13 @@ from pydantic import ValidationError
 
 from .. import server as server_state
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
-from ..schemas import RenamePreviewEdit, RenamePreviewError, RenamePreviewResult
+from ..schemas import (
+    DiagnosticsResult,
+    RenamePreviewEdit,
+    RenamePreviewError,
+    RenamePreviewResult,
+    ToolError,
+)
 from ..server import (
     clear_diagnostics_for_uri,
     close_file,
@@ -38,7 +44,7 @@ async def diagnostics(
     limit: int = DEFAULT_LIMIT,
     offset: int = DEFAULT_OFFSET,
     ctx: Context | None = None,
-) -> dict:
+) -> DiagnosticsResult | ToolError:
     """Get type errors and warnings.
 
     Args:
@@ -48,13 +54,13 @@ async def diagnostics(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: Paginated type issues and warnings with one-based ranges.
+    Returns: DiagnosticsResult, or ToolError when file_path is missing.
     """
     all_diagnostics = []
 
     if scope == "file":
         if not file_path:
-            return {"error": "file_path required when scope='file'"}
+            return ToolError(error="file_path required when scope='file'")
         project_file = resolve_project_file(file_path)
         client = await ensure_vtsls_indexed(file_path)
         file_uri = project_file.uri
@@ -79,17 +85,19 @@ async def diagnostics(
             all_diagnostics.extend([{"uri": uri, **d} for d in diags])
 
     if not all_diagnostics:
-        return {
-            "items": [],
-            "totalItems": 0,
-            "offset": offset,
-            "limit": limit,
-            "hasMore": False,
-        }
+        return DiagnosticsResult(
+            items=[],
+            totalItems=0,
+            offset=offset,
+            limit=limit,
+            hasMore=False,
+        )
 
     sorted_items = sorted(all_diagnostics, key=diagnostic_sort_key)
     paginated, metadata = apply_pagination(sorted_items, offset, limit)
-    return {"items": lsp_result_to_public(paginated), **metadata}
+    return DiagnosticsResult.model_validate(
+        {"items": lsp_result_to_public(paginated), **metadata}
+    )
 
 
 @mcp.tool()
@@ -202,8 +210,10 @@ def _normalize_rename_preview(result: dict[str, Any]) -> RenamePreviewResult:
             edit.uri,
             edit.range.start.line,
             edit.range.start.character,
-            edit.range.end.line,
-            edit.range.end.character,
+            edit.range.end.line if edit.range.end else edit.range.start.line,
+            edit.range.end.character
+            if edit.range.end
+            else edit.range.start.character,
             edit.newText,
         )
     )
