@@ -96,7 +96,9 @@ async def rename(
     new_name: str,
     ctx: Context | None = None,
 ) -> dict:
-    """Safely rename a symbol across the project.
+    """Preview a safe symbol rename across the project.
+
+    This returns a WorkspaceEdit only. It does not write files.
 
     Args:
         file_path: Path to the file containing the symbol
@@ -104,7 +106,7 @@ async def rename(
         character: One-based column on that line.
         new_name: New name for the symbol
 
-    Returns: WorkspaceEdit with all changes needed
+    Returns: WorkspaceEdit with all changes needed, or an error dict
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)

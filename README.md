@@ -233,6 +233,21 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 ## Tool Examples
 
+### Recommended Workflow
+
+For most single-file quality checks, start with `check_all`. It runs TypeScript
+diagnostics, Prettier, and ESLint together and returns one combined summary.
+Use `fix_all` when you want automatic ESLint fixes followed by Prettier
+formatting, optionally writing the result back to disk.
+
+`format_code`, `check_formatting`, and `lint_code` remain available as lower
+level tools when you need only one formatter or linter operation. For
+project-wide symbol-name discovery, start with text search to find candidate
+files, then use `document_symbols` or the semantic position-based tools.
+
+`rename` is safe to inspect: it returns a `WorkspaceEdit` preview of the files
+and ranges that should change. It does not write to disk by itself.
+
 ### Position Inputs And Results
 
 Tools such as `definition`, `references`, `symbol_info`, `type_info`, and
@@ -241,8 +256,6 @@ editor, terminal listing, or agent `Read` output shows line 28, pass `line=28`;
 returned ranges also use line 28 for that same source line. When you do not
 already know a position, `document_symbols` returns one-based ranges for the
 symbols in a file.
-For project-wide symbol-name discovery, start with text search to find candidate
-files, then use the semantic position-based tools.
 
 ### Navigate to Definition
 
@@ -268,46 +281,38 @@ result = await type_info(
 # Returns: {"typeName": "User", "fields": [...], "methods": {...}}
 ```
 
-### Format Code
+### Check Everything
 
 ```python
-# Format a TypeScript file
-result = await format_code(
-    file_path="/project/src/messy.ts"
-)
-# Returns: {"formatted": true, "code": "...", "changed": true}
-```
-
-### Lint and Fix
-
-```python
-# Lint with auto-fix
-result = await lint_code(
-    file_path="/project/src/app.ts",
-    fix=True
-)
-# Returns: {"issues": [...], "fixedCode": "..."}
-```
-
-### Run All Checks
-
-```python
-# Check formatting, linting, and types
+# Run TypeScript, Prettier, and ESLint checks for one file
 result = await check_all(
-    file_path="/project/src/index.ts"
+    file_path="/project/src/app.ts"
 )
-# Returns: {"checks": {...}, "overallPassed": false, "summary": "..."}
+# Returns: {"overallPassed": false, "checks": {...}, "summary": "..."}
 ```
 
-### Apply All Fixes
+### Fix Everything
 
 ```python
-# Fix all auto-fixable issues and write to file
+# Run ESLint fixes, then Prettier formatting
 result = await fix_all(
-    file_path="/project/src/index.ts",
-    write=True
+    file_path="/project/src/app.ts",
+    write=True,
 )
-# Returns: {"fixes": {...}, "written": true, "totalChanges": 5}
+# Returns: {"finalCode": "...", "totalChanges": 2, "written": true}
+```
+
+### Preview Rename
+
+```python
+# Preview a cross-project symbol rename without writing files
+result = await rename(
+    file_path="/project/src/app.ts",
+    line=12,
+    character=8,
+    new_name="newName",
+)
+# Returns: {"changes": {...}} or {"documentChanges": [...]}
 ```
 
 ## Architecture

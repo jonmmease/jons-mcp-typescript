@@ -18,7 +18,10 @@ async def format_code(
     config_file: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
-    """Format source code using Prettier.
+    """Lower-level Prettier formatting only.
+
+    Prefer fix_all for the normal agent workflow because it runs ESLint fixes
+    before Prettier. Use this when you specifically need only Prettier output.
 
     Args:
         file_path: Path to the file (used for config resolution)
@@ -75,7 +78,11 @@ async def check_formatting(
     config_file: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
-    """Check if code is formatted correctly without modifying it.
+    """Lower-level Prettier formatting check only.
+
+    Prefer check_all for the normal agent workflow because it combines
+    TypeScript diagnostics, Prettier, and ESLint. Use this when you specifically
+    need only the Prettier formatting status.
 
     Args:
         file_path: Path to the file

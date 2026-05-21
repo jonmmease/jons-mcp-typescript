@@ -31,7 +31,7 @@ async def check_all(
     include_typescript: bool = True,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run all checks on a file.
+    """Run the preferred combined quality check on a file.
 
     Checks code formatting, linting, and types in parallel and aggregates results.
 
@@ -155,7 +155,7 @@ async def fix_all(
     include_eslint: bool = True,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run all automatic fixes on a file.
+    """Run the preferred automatic fix workflow on a file.
 
     Applies ESLint fixes first, then Prettier formatting. Both are applied
     in sequence to the code. Optionally writes the fixed code back to the file.

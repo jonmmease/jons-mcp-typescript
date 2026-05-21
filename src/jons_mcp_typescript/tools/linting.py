@@ -17,7 +17,11 @@ async def lint_code(
     config_file: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Lint source code using ESLint.
+    """Lower-level ESLint lint/fix operation only.
+
+    Prefer check_all for normal checks and fix_all for normal automatic fixes.
+    Use this when you specifically need only ESLint results or ESLint fixed
+    code without Prettier.
 
     Args:
         file_path: Path to the file (used for config resolution)

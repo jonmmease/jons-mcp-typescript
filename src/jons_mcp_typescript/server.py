@@ -489,53 +489,26 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
 SERVER_INSTRUCTIONS = """
 MCP server providing TypeScript development capabilities via vtsls, Prettier, and ESLint.
 
+## Recommended Workflow
+Use `check_all` as the default single-file quality check: it combines
+TypeScript diagnostics, Prettier, and ESLint into one response. Use `fix_all`
+for automatic ESLint fixes followed by Prettier formatting. Reach for
+`format_code`, `check_formatting`, or `lint_code` only when a single formatter
+or linter operation is specifically needed.
+
+`rename` returns a WorkspaceEdit preview and does not write files. It is safe to
+call before deciding whether to apply edits.
+
 ## Position Inputs And Results
 Tools that accept or return `line` and `character` use one-based positions to
 match editor, terminal listing, and Read output. If Read shows line 28, pass
 `line=28`; returned ranges also use line 28 for that same source line.
 Use `document_symbols` to get one-based ranges before calling position-based
 tools when helpful.
+
+## Discovery Notes
 For project-wide symbol-name discovery, start with text search to find candidate
 files, then use the semantic position-based tools.
-
-## Navigation & Discovery
-| Tool | Purpose |
-|------|---------|
-| document_symbols | List all symbols defined in a file |
-| definition | Jump to where a symbol is defined |
-| type_definition | Jump to the type definition of a symbol |
-| implementation | Find implementations of interfaces/abstract classes |
-| references | Find all usages of a symbol |
-
-## Understanding Code
-| Tool | Purpose |
-|------|---------|
-| type_info | Get type name, fields, and methods for a value |
-| symbol_info | Get type signature and docs for any symbol |
-
-## Type Checking
-| Tool | Purpose |
-|------|---------|
-| diagnostics | Get type errors and warnings |
-
-## Refactoring
-| Tool | Purpose |
-|------|---------|
-| rename | Safely rename a symbol across the project |
-
-## Formatting & Linting
-| Tool | Purpose |
-|------|---------|
-| format_code | Format code using Prettier |
-| check_formatting | Check if code is formatted |
-| lint_code | Lint code using ESLint |
-| check_all | Run all checks on a file |
-| fix_all | Apply all automatic fixes |
-
-## Server Management
-| Tool | Purpose |
-|------|---------|
-| restart_server | Restart TypeScript language server |
 """
 
 # Create FastMCP instance
