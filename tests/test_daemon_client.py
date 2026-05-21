@@ -323,8 +323,11 @@ class TestDaemonReadySignal:
                 with patch.object(daemon, "_start_reader_thread"):
                     with patch.object(daemon, "_start_stderr_thread"):
                         with patch.object(daemon, "shutdown", new_callable=AsyncMock):
-                            # Patch asyncio.wait_for to use shorter timeout
-                            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                            async def timeout_wait_for(awaitable, timeout):
+                                awaitable.close()
+                                raise asyncio.TimeoutError
+
+                            with patch("asyncio.wait_for", side_effect=timeout_wait_for):
                                 with pytest.raises(DaemonTimeoutError):
                                     await daemon.start()
 
@@ -482,7 +485,7 @@ class TestDaemonLifecycle:
             mock_process.stdin = MagicMock()
             mock_process.poll = MagicMock(return_value=None)
 
-            async def mock_wait(*args, **kwargs):
+            def mock_wait(*_args, **_kwargs):
                 return
 
             mock_process.wait = mock_wait

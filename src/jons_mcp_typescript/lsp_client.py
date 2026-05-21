@@ -81,31 +81,6 @@ class ProcessWatchdog:
         return process
 
 
-def read_tsconfig(project_root: Path) -> dict[str, Any]:
-    """Read tsconfig.json if it exists."""
-    config_path = project_root / "tsconfig.json"
-    if config_path.exists():
-        try:
-            content = config_path.read_text()
-            # Strip single-line comments (crude but works for most cases)
-            lines = []
-            for line in content.split("\n"):
-                stripped = line.strip()
-                if not stripped.startswith("//"):
-                    # Remove trailing comments
-                    comment_idx = line.find("//")
-                    if comment_idx >= 0:
-                        line = line[:comment_idx]
-                    lines.append(line)
-            content = "\n".join(lines)
-            config = json.loads(content)
-            logger.info(f"Loaded tsconfig.json from {config_path}")
-            return config if isinstance(config, dict) else {}
-        except Exception as e:
-            logger.warning(f"Failed to read tsconfig.json: {e}")
-    return {}
-
-
 class VtslsClient:
     """Thread-based LSP client for vtsls (Vue/TypeScript Language Server)."""
 
@@ -194,7 +169,7 @@ class VtslsClient:
                 )
                 if node_path.exists():
                     logger.info(f"Found vtsls via npm global: {node_path}")
-                return f"node {shlex.quote(str(node_path))}"
+                    return f"node {shlex.quote(str(node_path))}"
 
                 # Also check without 'lib' (some npm configurations)
                 alt_path = (

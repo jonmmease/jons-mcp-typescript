@@ -115,6 +115,55 @@ class TestVtslsClientInitialization:
             client = VtslsClient(temp_project)
             assert client.is_initialized() is False
 
+    def test_find_vtsls_checks_alternate_npm_global_path(self, temp_project: Path):
+        """Test npm global fallback checks both common install layouts."""
+        npm_prefix = temp_project / "npm-prefix"
+        alt_vtsls = (
+            npm_prefix
+            / "node_modules"
+            / "@vtsls"
+            / "language-server"
+            / "bin"
+            / "vtsls.js"
+        )
+        alt_vtsls.parent.mkdir(parents=True)
+        alt_vtsls.write_text("", encoding="utf-8")
+
+        client = VtslsClient.__new__(VtslsClient)
+        client.project_root = temp_project
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(stdout=str(npm_prefix))),
+        ):
+            assert client._find_vtsls() == f"node {alt_vtsls}"
+
+    def test_find_vtsls_falls_back_to_project_local_path(self, temp_project: Path):
+        """Test a missing npm-global install does not block local vtsls discovery."""
+        npm_prefix = temp_project / "empty-npm-prefix"
+        npm_prefix.mkdir()
+        local_vtsls = (
+            temp_project
+            / "node_modules"
+            / "@vtsls"
+            / "language-server"
+            / "bin"
+            / "vtsls.js"
+        )
+        local_vtsls.parent.mkdir(parents=True)
+        local_vtsls.write_text("", encoding="utf-8")
+
+        client = VtslsClient.__new__(VtslsClient)
+        client.project_root = temp_project
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(stdout=str(npm_prefix))),
+        ):
+            assert client._find_vtsls() == f"node {local_vtsls}"
+
 
 class TestVtslsClientMessageHandling:
     """Test suite for message handling in VtslsClient."""

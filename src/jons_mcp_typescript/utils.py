@@ -78,31 +78,6 @@ def resolve_project_path(
     return resolved
 
 
-def ensure_file_uri(file_path: str, project_root: Path | None = None) -> str:
-    """Convert a file path to a proper file URI.
-
-    Args:
-        file_path: Path to the file (absolute, relative, or already a URI).
-        project_root: Optional project root for relative path resolution and
-            containment validation.
-
-    Returns:
-        Properly formatted file:// URI.
-    """
-    if project_root is not None:
-        return resolve_project_path(
-            file_path, project_root, must_exist=False
-        ).as_uri()
-
-    if file_path.startswith("file://"):
-        return path_from_file_uri(file_path).resolve(strict=False).as_uri()
-
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.resolve(strict=False).as_uri()
-
-
 def apply_pagination(
     items: list[T],
     offset: int = DEFAULT_OFFSET,
@@ -168,39 +143,6 @@ def location_sort_key(item: dict[str, Any]) -> tuple[str, int, int]:
     return (uri, line, char)
 
 
-def symbol_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
-    """Sort key for document symbols.
-
-    Sorts by line number, then character, then by name.
-    """
-    # For DocumentSymbol format
-    if "range" in item:
-        start = item.get("range", {}).get("start", {})
-        line = start.get("line", 0)
-        char = start.get("character", 0)
-    # For SymbolInformation format
-    else:
-        location = item.get("location", {})
-        start = location.get("range", {}).get("start", {})
-        line = start.get("line", 0)
-        char = start.get("character", 0)
-
-    name = item.get("fullName", item.get("name", ""))
-    return (line, char, name)
-
-
-def workspace_symbol_sort_key(item: dict[str, Any]) -> tuple[str, str, int]:
-    """Sort key for workspace symbols.
-
-    Sorts by name, then by URI, then by line.
-    """
-    name = item.get("name", "")
-    location = item.get("location", {})
-    uri = location.get("uri", "")
-    line = location.get("range", {}).get("start", {}).get("line", 0)
-    return (name, uri, line)
-
-
 def diagnostic_sort_key(item: dict[str, Any]) -> tuple[int, str, int, int]:
     """Sort key for diagnostics.
 
@@ -225,20 +167,3 @@ def count_eslint_messages(messages: list[dict[str, Any]]) -> tuple[int, int]:
         elif severity in ("warning", 1):
             warning_count += 1
     return error_count, warning_count
-
-
-def find_package_root(file_path: str) -> str:
-    """Find the nearest package.json by walking up the directory tree.
-
-    Args:
-        file_path: Path to start searching from
-
-    Returns:
-        Path to the directory containing package.json, or parent directory if not found
-    """
-    current = Path(file_path).parent if Path(file_path).is_file() else Path(file_path)
-    while current != current.parent:
-        if (current / "package.json").exists():
-            return str(current)
-        current = current.parent
-    return str(Path(file_path).parent)

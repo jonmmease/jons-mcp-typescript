@@ -65,7 +65,6 @@ daemon: FormatterLinterDaemon | None = None
 current_diagnostics: dict[str, list] = {}  # uri -> diagnostics
 document_states: dict[str, DocumentState] = {}  # uri -> document state for version tracking
 pending_diagnostics_events: dict[str, asyncio.Event] = {}  # uri -> event for waiting
-initialization_complete = False
 _project_root: Path | None = None
 
 
@@ -361,7 +360,7 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     Yields:
         None during server operation.
     """
-    global vtsls, daemon, initialization_complete
+    global vtsls, daemon
 
     # Get project root from global state or use current directory
     project_root = get_project_root()
@@ -387,7 +386,6 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
         logger.info("Waiting for initial TypeScript analysis...")
         await asyncio.sleep(2.0)
 
-        initialization_complete = True
         logger.info("MCP server initialization complete")
 
         # Yield control to the server
@@ -396,7 +394,6 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     finally:
         # Shutdown
         logger.info("Shutting down MCP server...")
-        initialization_complete = False
 
         # Shutdown daemon first
         if daemon:
@@ -464,7 +461,7 @@ mcp = FastMCP(
 )
 
 
-def signal_handler(signum: int, frame: Any) -> None:
+def signal_handler(signum: int, _frame: Any) -> None:
     """Handle SIGINT and SIGTERM signals.
 
     Args:
