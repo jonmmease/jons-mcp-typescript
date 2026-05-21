@@ -29,6 +29,11 @@ class VtslsNotInitializedError(Exception):
     pass
 
 
+class DocumentSyncError(Exception):
+    """Exception raised when a document cannot be synced with vtsls."""
+    pass
+
+
 class VtslsNotFoundError(Exception):
     """Exception raised when vtsls executable is not found."""
     pass

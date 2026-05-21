@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from jons_mcp_typescript import server
+from jons_mcp_typescript.exceptions import DocumentSyncError
 from jons_mcp_typescript.tools import linting, unified
 from jons_mcp_typescript.tools.intelligence import restart_server
 from jons_mcp_typescript.tools.language import type_info
@@ -177,6 +178,18 @@ async def test_lifespan_shuts_down_vtsls_when_daemon_start_fails(monkeypatch):
             server._project_root = None
             server.vtsls = None
             server.daemon = None
+
+
+@pytest.mark.asyncio
+async def test_open_file_raises_when_disk_sync_fails(tmp_path):
+    missing_file = tmp_path / "missing.ts"
+
+    with pytest.raises(DocumentSyncError, match="Failed to sync"):
+        await server.open_file(
+            FakeTypeInfoClient(),
+            missing_file,
+            missing_file.as_uri(),
+        )
 
 
 @pytest.mark.asyncio

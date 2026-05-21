@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 
 from .constants import DIAGNOSTICS_TIMEOUT
 from .daemon_client import FormatterLinterDaemon
-from .exceptions import VtslsNotInitializedError
+from .exceptions import DocumentSyncError, VtslsNotInitializedError
 from .lsp_client import VtslsClient
 from .utils import resolve_project_path
 
@@ -192,7 +192,7 @@ def get_daemon() -> FormatterLinterDaemon:
     return daemon
 
 
-async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -> bool:
+async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -> None:
     """Open or sync a file in vtsls with current disk content.
 
     Uses version tracking to properly notify vtsls of changes:
@@ -206,8 +206,8 @@ async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -
         file_path: Absolute path to the file.
         file_uri: URI of the file (file://<path>).
 
-    Returns:
-        True if file was synced successfully, False on error.
+    Raises:
+        DocumentSyncError: If the file cannot be read or synced with vtsls.
     """
     try:
         path = Path(file_path)
@@ -288,10 +288,11 @@ async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -
             )
             logger.debug(f"Reopened file in vtsls: {file_path} (v{version})")
 
-        return True
     except Exception as e:
         logger.error(f"Failed to open file {file_path}: {e}")
-        return False
+        raise DocumentSyncError(
+            f"Failed to sync {file_path} with TypeScript language server: {e}"
+        ) from e
 
 
 async def sync_open_file_content(
