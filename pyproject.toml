@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastmcp>=0.3.0",
+    "fastmcp>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -145,5 +145,7 @@ dev = [
     "pytest-timeout>=2.1.0",
     "pytest-mock>=3.10.0",
     "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]

@@ -56,3 +56,6 @@ Thumbs.db
 # Claude Code internal state
 .claude/jons-plan/
 .claude/jons-workflow/
+
+# Local scratch notes
+scratch/

@@ -49,7 +49,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_diagnostics_file_scope_requires_file_path():
-    result = await intelligence.diagnostics.fn(scope="file")
+    result = await intelligence.diagnostics(scope="file")
 
     assert result == {"error": "file_path required when scope='file'"}
 
@@ -78,7 +78,7 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
 
     monkeypatch.setattr(intelligence, "wait_for_diagnostics", wait)
 
-    result = await intelligence.diagnostics.fn("src/main.ts", limit=1, offset=0)
+    result = await intelligence.diagnostics("src/main.ts", limit=1, offset=0)
 
     assert result["totalItems"] == 2
     assert result["items"] == [
@@ -108,7 +108,7 @@ async def test_diagnostics_closes_file_when_wait_fails(
     monkeypatch.setattr(intelligence, "wait_for_diagnostics", wait)
 
     with pytest.raises(RuntimeError, match="diagnostics failed"):
-        await intelligence.diagnostics.fn("src/main.ts")
+        await intelligence.diagnostics("src/main.ts")
 
     assert opened == closed
 
@@ -132,7 +132,7 @@ async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
     ]
 
     try:
-        result = await intelligence.diagnostics.fn(scope="workspace")
+        result = await intelligence.diagnostics(scope="workspace")
 
         assert [item["uri"] for item in result["items"]] == [
             "file:///a.ts",
@@ -150,7 +150,7 @@ async def test_rename_returns_error_when_prepare_rename_rejects(
     fake, opened, closed, _ensure_calls = harness
     fake.responses = [None]
 
-    result = await intelligence.rename.fn(
+    result = await intelligence.rename(
         "src/main.ts",
         line=0,
         character=6,
@@ -171,7 +171,7 @@ async def test_rename_continues_when_prepare_rename_is_unsupported(
     edit = {"changes": {"file:///project/src/main.ts": []}}
     fake.responses = [RuntimeError("unsupported"), edit]
 
-    result = await intelligence.rename.fn(
+    result = await intelligence.rename(
         "src/main.ts",
         line=0,
         character=6,
@@ -204,7 +204,7 @@ async def test_rename_normalizes_failed_results(
     fake, opened, closed, _ensure_calls = harness
     fake.responses = [{"range": {}}, rename_result]
 
-    result = await intelligence.rename.fn(
+    result = await intelligence.rename(
         "src/main.ts",
         line=0,
         character=6,

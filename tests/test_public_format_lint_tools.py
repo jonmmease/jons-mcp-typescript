@@ -74,7 +74,7 @@ async def test_format_code_reads_file_and_normalizes_result(
     source.write_text("const value=1;\n", encoding="utf-8")
     daemon.format_result = {"formatted": "const value = 1;\n"}
 
-    result = await formatting.format_code.fn("src/main.ts")
+    result = await formatting.format_code("src/main.ts")
 
     assert result == {
         "formatted": True,
@@ -91,7 +91,7 @@ async def test_format_code_accepts_explicit_empty_code_for_missing_file(
     target = tool_project / "src" / "generated.ts"
     daemon.format_result = {"formatted": ""}
 
-    result = await formatting.format_code.fn("src/generated.ts", code="")
+    result = await formatting.format_code("src/generated.ts", code="")
 
     assert result["code"] == ""
     assert result["changed"] is False
@@ -105,7 +105,7 @@ async def test_check_formatting_returns_status_message(
     source = tool_project / "src" / "main.ts"
     daemon.check_result = {"isFormatted": False}
 
-    result = await formatting.check_formatting.fn("src/main.ts", code="let x=1;")
+    result = await formatting.check_formatting("src/main.ts", code="let x=1;")
 
     assert result == {"formatted": False, "message": "Code needs formatting"}
     assert daemon.calls == [("check_formatting", (str(source.resolve()), "let x=1;"))]
@@ -118,7 +118,7 @@ async def test_get_prettier_config_includes_config_file(daemon: RecordingDaemon)
         "configPath": "/project/.prettierrc",
     }
 
-    result = await formatting.get_prettier_config.fn("src/main.ts")
+    result = await formatting.get_prettier_config("src/main.ts")
 
     assert result == {"singleQuote": True, "configFile": "/project/.prettierrc"}
 
@@ -137,7 +137,7 @@ async def test_formatting_tools_map_prettier_errors(
     daemon.error = RuntimeError(message)
 
     with pytest.raises(expected_error):
-        await formatting.format_code.fn("src/main.ts", code="bad")
+        await formatting.format_code("src/main.ts", code="bad")
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_lint_code_reads_file_and_counts_string_severities(
         "fixedContent": "const used = 1;\n",
     }
 
-    result = await linting.lint_code.fn("src/main.ts", fix=True)
+    result = await linting.lint_code("src/main.ts", fix=True)
 
     assert result["totalIssues"] == 2
     assert result["errors"] == 1
@@ -175,7 +175,7 @@ async def test_lint_code_uses_daemon_counts_when_present(daemon: RecordingDaemon
         "fixedContent": "ignored",
     }
 
-    result = await linting.lint_code.fn("src/new.ts", code="const x = 1;")
+    result = await linting.lint_code("src/new.ts", code="const x = 1;")
 
     assert result["errors"] == 3
     assert result["warnings"] == 4
@@ -186,7 +186,7 @@ async def test_lint_code_uses_daemon_counts_when_present(daemon: RecordingDaemon
 async def test_get_eslint_config_returns_dict_only(daemon: RecordingDaemon):
     daemon.eslint_config_result = {"config": ["not", "a", "dict"]}
 
-    result = await linting.get_eslint_config.fn("src/main.ts")
+    result = await linting.get_eslint_config("src/main.ts")
 
     assert result == {}
 
@@ -205,4 +205,4 @@ async def test_linting_tools_map_eslint_errors(
     daemon.error = RuntimeError(message)
 
     with pytest.raises(expected_error):
-        await linting.lint_code.fn("src/main.ts", code="bad")
+        await linting.lint_code("src/main.ts", code="bad")

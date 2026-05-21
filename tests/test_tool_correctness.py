@@ -119,7 +119,7 @@ def project_file():
 async def test_lint_code_counts_string_severities(monkeypatch, project_file):
     monkeypatch.setattr(linting, "get_daemon", lambda: FakeDaemon())
 
-    result = await linting.lint_code.fn(str(project_file))
+    result = await linting.lint_code(str(project_file))
 
     assert result["errors"] == 1
     assert result["warnings"] == 1
@@ -129,7 +129,7 @@ async def test_lint_code_counts_string_severities(monkeypatch, project_file):
 async def test_check_all_fails_on_eslint_error(monkeypatch, project_file):
     monkeypatch.setattr(unified, "get_daemon", lambda: FakeDaemon())
 
-    result = await unified.check_all.fn(str(project_file), include_typescript=False)
+    result = await unified.check_all(str(project_file), include_typescript=False)
 
     assert result["checks"]["eslint"]["passed"] is False
     assert result["overallPassed"] is False
@@ -148,7 +148,7 @@ async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
             lambda: fake_daemon,
         )
 
-        result = await restart_server.fn()
+        result = await restart_server()
 
         assert fake_vtsls.restart_count == 1
         assert fake_daemon.restart_count == 1
@@ -206,7 +206,7 @@ async def test_type_info_uses_temporary_dot_completion():
         server._project_root = project_root
         server.vtsls = fake_client  # type: ignore[assignment]
         try:
-            result = await type_info.fn("src/main.ts", line=1, character=1)
+            result = await type_info("src/main.ts", line=1, character=1)
 
             assert result["typeName"] == "User"
             assert result["fields"] == [{"name": "name", "type": "string"}]

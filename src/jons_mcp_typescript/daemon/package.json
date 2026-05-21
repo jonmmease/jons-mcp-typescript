@@ -9,12 +9,12 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "prettier": "^3.0.0",
-    "eslint": "^9.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0"
+    "prettier": "^3.8.3",
+    "eslint": "^9.39.4",
+    "@typescript-eslint/parser": "^8.59.4",
+    "@typescript-eslint/eslint-plugin": "^8.59.4"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
   }
 }

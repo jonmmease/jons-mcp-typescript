@@ -49,7 +49,7 @@ async def test_check_all_prettier_only_reports_formatting_failure(
 ):
     daemon.check_result = {"isFormatted": False}
 
-    result = await unified.check_all.fn(
+    result = await unified.check_all(
         "src/main.ts",
         include_eslint=False,
         include_typescript=False,
@@ -73,7 +73,7 @@ async def test_check_all_eslint_only_counts_string_severities(
         ]
     }
 
-    result = await unified.check_all.fn(
+    result = await unified.check_all(
         "src/main.ts",
         include_prettier=False,
         include_typescript=False,
@@ -91,7 +91,7 @@ async def test_check_all_normalizes_daemon_exceptions(
 ):
     daemon.lint_error = RuntimeError("eslint exploded")
 
-    result = await unified.check_all.fn(
+    result = await unified.check_all(
         "src/main.ts",
         include_prettier=False,
         include_typescript=False,
@@ -135,7 +135,7 @@ async def test_check_all_typescript_branch_uses_fresh_diagnostics(
     monkeypatch.setattr(unified, "wait_for_diagnostics", wait)
     monkeypatch.setattr(unified, "close_file", close_file)
 
-    result = await unified.check_all.fn(
+    result = await unified.check_all(
         "src/main.ts",
         include_prettier=False,
         include_eslint=False,
@@ -169,7 +169,7 @@ async def test_fix_all_runs_eslint_then_prettier_without_writing(
     }
     daemon.format_result = {"formatted": "const value = 1;\n"}
 
-    result = await unified.fix_all.fn("src/main.ts", write=False)
+    result = await unified.fix_all("src/main.ts", write=False)
 
     assert result["finalCode"] == "const value = 1;\n"
     assert result["totalChanges"] == 2
@@ -186,7 +186,7 @@ async def test_fix_all_writes_changed_content(tool_project: Path, daemon: Unifie
     daemon.lint_result = {"messages": [], "fixedContent": None}
     daemon.format_result = {"formatted": "const value = 1;\n"}
 
-    result = await unified.fix_all.fn(
+    result = await unified.fix_all(
         "src/main.ts",
         write=True,
         include_eslint=False,
@@ -207,7 +207,7 @@ async def test_fix_all_respects_include_flags_and_unchanged_content(
     source.write_text("const value = 1;\n", encoding="utf-8")
     daemon.format_result = {"formatted": "const value = 1;\n"}
 
-    result = await unified.fix_all.fn(
+    result = await unified.fix_all(
         "src/main.ts",
         write=True,
         include_eslint=False,

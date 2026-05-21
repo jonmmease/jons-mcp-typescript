@@ -72,7 +72,7 @@ async def test_navigation_tools_open_request_and_close(
     }
     fake.responses[lsp_method] = location
 
-    result = await tool.fn("src/main.ts", line=1, character=2)
+    result = await tool("src/main.ts", line=1, character=2)
 
     assert result == location
     assert ensure_calls == ["src/main.ts"]
@@ -109,7 +109,7 @@ async def test_references_sorts_and_paginates(
         },
     ]
 
-    result = await language.references.fn(
+    result = await language.references(
         "src/main.ts",
         line=0,
         character=1,
@@ -157,7 +157,7 @@ async def test_workspace_symbols_sorts_and_paginates(
         },
     ]
 
-    result = await language.workspace_symbols.fn("a", limit=2, offset=0)
+    result = await language.workspace_symbols("a", limit=2, offset=0)
 
     assert [(item["name"], item["location"]["uri"]) for item in result["items"]] == [
         ("Alpha", "file:///a.ts"),
@@ -192,7 +192,7 @@ async def test_document_symbols_flattens_sorts_and_closes(
         }
     ]
 
-    result = await language.document_symbols.fn("src/main.ts")
+    result = await language.document_symbols("src/main.ts")
 
     assert [(item["name"], item.get("containerName")) for item in result["items"]] == [
         ("User", None),
@@ -212,7 +212,7 @@ async def test_symbol_info_normalizes_hover_content(
         "range": {"start": {"line": 0, "character": 0}},
     }
 
-    result = await language.symbol_info.fn("src/main.ts", line=0, character=6)
+    result = await language.symbol_info("src/main.ts", line=0, character=6)
 
     assert result == {
         "content": "const value: number\ndocs",
@@ -271,7 +271,7 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         },
     }
 
-    result = await language.type_info.fn(
+    result = await language.type_info(
         "src/main.ts",
         line=1,
         character=1,
@@ -324,7 +324,7 @@ async def test_type_info_returns_external_source_without_opening_it(
         "textDocument/completion": {"items": []},
     }
 
-    result = await language.type_info.fn("src/main.ts", line=0, character=1)
+    result = await language.type_info("src/main.ts", line=0, character=1)
 
     assert result["sourceLocation"] == {"uri": external.as_uri(), "range": {}}
     assert [call[0] for call in fake.calls] == [
@@ -350,7 +350,7 @@ async def test_type_info_skips_completion_when_identifier_is_not_safe(
         "textDocument/completion": AssertionError("completion should not be requested"),
     }
 
-    result = await language.type_info.fn("src/main.ts", line=0, character=0)
+    result = await language.type_info("src/main.ts", line=0, character=0)
 
     assert result["typeName"] == "unknown"
     assert result["fields"] == []

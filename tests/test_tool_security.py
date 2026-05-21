@@ -21,22 +21,22 @@ ToolCall = Callable[[str], Awaitable[Any]]
 def tool_calls() -> dict[str, ToolCall]:
     """Return public file-path tool invocations keyed by tool name."""
     return {
-        "format_code": lambda path: formatting.format_code.fn(path, code=""),
-        "check_formatting": lambda path: formatting.check_formatting.fn(path, code=""),
-        "get_prettier_config": lambda path: formatting.get_prettier_config.fn(path),
-        "lint_code": lambda path: linting.lint_code.fn(path, code=""),
-        "get_eslint_config": lambda path: linting.get_eslint_config.fn(path),
-        "diagnostics": lambda path: intelligence.diagnostics.fn(path, scope="file"),
-        "rename": lambda path: intelligence.rename.fn(path, 0, 0, "renamed"),
-        "definition": lambda path: language.definition.fn(path, 0, 0),
-        "type_definition": lambda path: language.type_definition.fn(path, 0, 0),
-        "implementation": lambda path: language.implementation.fn(path, 0, 0),
-        "references": lambda path: language.references.fn(path, 0, 0),
-        "document_symbols": lambda path: language.document_symbols.fn(path),
-        "symbol_info": lambda path: language.symbol_info.fn(path, 0, 0),
-        "type_info": lambda path: language.type_info.fn(path, 0, 0),
-        "check_all": lambda path: unified.check_all.fn(path),
-        "fix_all": lambda path: unified.fix_all.fn(path, write=True),
+        "format_code": lambda path: formatting.format_code(path, code=""),
+        "check_formatting": lambda path: formatting.check_formatting(path, code=""),
+        "get_prettier_config": lambda path: formatting.get_prettier_config(path),
+        "lint_code": lambda path: linting.lint_code(path, code=""),
+        "get_eslint_config": lambda path: linting.get_eslint_config(path),
+        "diagnostics": lambda path: intelligence.diagnostics(path, scope="file"),
+        "rename": lambda path: intelligence.rename(path, 0, 0, "renamed"),
+        "definition": lambda path: language.definition(path, 0, 0),
+        "type_definition": lambda path: language.type_definition(path, 0, 0),
+        "implementation": lambda path: language.implementation(path, 0, 0),
+        "references": lambda path: language.references(path, 0, 0),
+        "document_symbols": lambda path: language.document_symbols(path),
+        "symbol_info": lambda path: language.symbol_info(path, 0, 0),
+        "type_info": lambda path: language.type_info(path, 0, 0),
+        "check_all": lambda path: unified.check_all(path),
+        "fix_all": lambda path: unified.fix_all(path, write=True),
     }
 
 

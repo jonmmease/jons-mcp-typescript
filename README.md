@@ -21,7 +21,7 @@ uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
 ### Prerequisites
 
 1. **Python 3.10+** with `uv`
-2. **Node.js 18+**
+2. **Node.js 18.18+**, Node.js 20.9+, or a newer supported Node.js release
 3. **vtsls** - TypeScript language server, installed globally or in the TypeScript project:
    ```bash
    # Global install
@@ -373,7 +373,7 @@ uv run pytest tests/test_utils.py -v
 ### Test Requirements
 
 Integration tests require:
-- Node.js installed
+- Node.js 18.18+, Node.js 20.9+, or a newer supported Node.js release
 - vtsls installed globally or in the temporary test project
 - Prettier and ESLint available to the temporary test project
 
