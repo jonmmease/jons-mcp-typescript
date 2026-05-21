@@ -10,7 +10,7 @@ from jons_mcp_typescript import server
 from jons_mcp_typescript.exceptions import DocumentSyncError, ProjectLoadError
 from jons_mcp_typescript.tools import linting, unified
 from jons_mcp_typescript.tools.intelligence import restart_server
-from jons_mcp_typescript.tools.language import type_info
+from jons_mcp_typescript.tools.language import type_info_of_reference
 
 
 class FakeDaemon:
@@ -88,7 +88,18 @@ class FakeTypeInfoClient:
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
         if method == "workspace/executeCommand":
+            request_name = params["arguments"][0]
             filepath = params["arguments"][1]["file"]
+            if request_name == "quickinfo":
+                return {
+                    "success": True,
+                    "body": {
+                        "displayString": (
+                            "const user: { name: string; greet(): void; }"
+                        ),
+                        "kind": "const",
+                    },
+                }
             return {
                 "success": True,
                 "body": {
@@ -292,10 +303,13 @@ async def test_type_info_uses_temporary_dot_completion():
         server._project_root = project_root
         server.vtsls = fake_client  # type: ignore[assignment]
         try:
-            result = await type_info("src/main.ts", line=2, character=2)
+            result = await type_info_of_reference("src/main.ts", line=2, character=2)
 
             result_dict = result.model_dump(exclude_none=True)
-            assert result_dict["typeName"] == "User"
+            assert result_dict["displayString"] == (
+                "const user: { name: string; greet(): void; }"
+            )
+            assert result_dict["kind"] == "const"
             assert result_dict["fields"] == [{"name": "name", "type": "string"}]
             assert result_dict["methods"]["items"] == [
                 {"name": "greet", "signature": "() => void"}

@@ -193,14 +193,14 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 | Tool | Purpose |
 |------|---------|
-| `type_info` | Get type name, fields, and methods for a value |
+| `type_info_of_reference` | Get TypeScript display info and accessible members for a value reference |
 | `symbol_info` | Get type signature and docs for any symbol |
 
 ### Type Checking
 
 | Tool | Purpose |
 |------|---------|
-| `diagnostics` | Get type errors and warnings |
+| `diagnostics` | Get fresh type errors and warnings for one file |
 
 ### Refactoring
 
@@ -251,8 +251,9 @@ does not write to disk by itself.
 
 ### Position Inputs And Results
 
-Tools such as `definition`, `references`, `symbol_info`, `type_info`, and
-`preview_rename` use one-based positions for both inputs and returned ranges. If
+Tools such as `definition`, `references`, `symbol_info`,
+`type_info_of_reference`, and `preview_rename` use one-based positions for both
+inputs and returned ranges. If
 your editor, terminal listing, or agent `Read` output shows line 28, pass
 `line=28`; returned ranges also use line 28 for that same source line. When you
 do not already know a position, `document_symbols` returns one-based ranges for
@@ -267,19 +268,19 @@ result = await definition(
     line=10,
     character=15,
 )
-# Returns: {"uri": "file:///project/src/utils.ts", "range": {...}}
+# Returns: {"items": [{"uri": "file:///project/src/utils.ts", "range": {...}}], "totalItems": 1}
 ```
 
 ### Get Type Information
 
 ```python
-# Get fields and methods of a variable's type
-result = await type_info(
+# Get TypeScript display info plus fields and methods of a value reference
+result = await type_info_of_reference(
     file_path="/project/src/app.ts",
     line=5,
     character=8,
 )
-# Returns: {"typeName": "User", "fields": [...], "methods": {...}}
+# Returns: {"displayString": "const user: User", "kind": "const", "fields": [...], "methods": {...}}
 ```
 
 ### Check Everything

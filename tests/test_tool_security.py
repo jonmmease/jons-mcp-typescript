@@ -26,7 +26,7 @@ def tool_calls() -> dict[str, ToolCall]:
         "get_prettier_config": lambda path: formatting.get_prettier_config(path),
         "lint_code": lambda path: linting.lint_code(path, code=""),
         "get_eslint_config": lambda path: linting.get_eslint_config(path),
-        "diagnostics": lambda path: intelligence.diagnostics(path, scope="file"),
+        "diagnostics": lambda path: intelligence.diagnostics(path),
         "preview_rename": lambda path: intelligence.preview_rename(
             path, 1, 1, "renamed"
         ),
@@ -36,7 +36,9 @@ def tool_calls() -> dict[str, ToolCall]:
         "references": lambda path: language.references(path, 1, 1),
         "document_symbols": lambda path: language.document_symbols(path),
         "symbol_info": lambda path: language.symbol_info(path, 1, 1),
-        "type_info": lambda path: language.type_info(path, 1, 1),
+        "type_info_of_reference": lambda path: language.type_info_of_reference(
+            path, 1, 1
+        ),
         "check_all": lambda path: unified.check_all(path),
         "fix_all": lambda path: unified.fix_all(path, write=True),
     }

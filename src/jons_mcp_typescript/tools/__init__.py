@@ -11,7 +11,7 @@ Navigation & Discovery:
 
 Information:
     - symbol_info: Get type signature and docs for any symbol
-    - type_info: Get type name, fields, and methods for a value
+    - type_info_of_reference: Get display info and members for a value reference
 
 Type Checking:
     - diagnostics: Get type errors and warnings
@@ -48,7 +48,7 @@ from .language import (
     references,
     symbol_info,
     type_definition,
-    type_info,
+    type_info_of_reference,
 )
 from .linting import get_eslint_config, lint_code
 from .unified import check_all, fix_all
@@ -62,7 +62,7 @@ __all__ = [
     "document_symbols",
     # Information
     "symbol_info",
-    "type_info",
+    "type_info_of_reference",
     # Type checking
     "diagnostics",
     # Refactoring

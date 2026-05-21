@@ -1,18 +1,20 @@
 """Navigation and information tools for TypeScript development.
 
 Navigation tools: definition, type_definition, implementation, references
-Information tools: symbol_info, type_info
+Information tools: symbol_info, type_info_of_reference
 """
 
-import re
 from typing import Any
 
 from fastmcp import Context
+from pydantic import ValidationError
 
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
 from ..schemas import (
     DocumentSymbolsResult,
     NavigationResult,
+    PublicLocation,
+    PublicRange,
     ReferencesResult,
     SymbolInfoResult,
     TypeInfoResult,
@@ -21,7 +23,6 @@ from ..server import (
     close_file,
     ensure_project_loaded,
     ensure_vtsls_indexed,
-    is_project_file_uri,
     mcp,
     open_file,
     resolve_project_file,
@@ -91,6 +92,30 @@ def _normalize_navigation_item(raw_item: Any) -> dict[str, Any] | None:
         return item
 
     return None
+
+
+def _type_source_location(
+    type_location: Any,
+) -> PublicLocation | None:
+    """Return a normalized public source location."""
+    if not isinstance(type_location, dict):
+        return None
+
+    target_uri = type_location.get("targetUri") or type_location.get("uri")
+    if not isinstance(target_uri, str):
+        return None
+
+    target_range = type_location.get("targetRange") or type_location.get("range")
+    source_data: dict[str, Any] = {"uri": target_uri}
+    if isinstance(target_range, dict):
+        try:
+            source_data["range"] = PublicRange.model_validate(
+                lsp_result_to_public(target_range)
+            )
+        except ValidationError:
+            pass
+
+    return PublicLocation.model_validate(source_data)
 
 
 @mcp.tool()
@@ -402,7 +427,7 @@ async def symbol_info(
 
 
 @mcp.tool()
-async def type_info(
+async def type_info_of_reference(
     file_path: str,
     line: int,
     character: int,
@@ -411,9 +436,12 @@ async def type_info(
     include_documentation: bool = False,
     ctx: Context | None = None,
 ) -> TypeInfoResult:
-    """Get type name, fields, and methods for a value.
+    """Get TypeScript display info and accessible members for a value reference.
 
-    This is the primary tool for understanding what operations are available on a value.
+    For best results, call this on a reference/use of a value at the probe
+    location, such as `user` in `user.name` or a standalone `user;`, not on the
+    declaration name in `const user = ...`. Returned fields and methods are the
+    members available on that reference at the probe location.
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
@@ -425,10 +453,12 @@ async def type_info(
 
     Returns:
         TypeInfoResult with:
-        - typeName: The inferred type name
+        - displayString: Exact TypeScript quickinfo display string
+        - kind: TypeScript quickinfo kind, such as const, function, or class
         - fields: List of field definitions with name and type
         - methods: Paginated list of methods with signatures
-        - sourceLocation: File URI and one-based range for the type definition (if available)
+        - sourceLocation: File URI and normalized one-based range for the type
+          definition (if available)
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -436,26 +466,16 @@ async def type_info(
     position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
-    # Track files we open so we can close them all
-    opened_uris = [file_uri]
-
     try:
         await ensure_project_loaded(client, project_file.path)
 
-        # Step 1: Get type info from hover
-        hover_result = await client.request(
-            "textDocument/hover",
-            {
-                "textDocument": {"uri": file_uri},
-                "position": position,
-            },
+        quickinfo = await _get_quickinfo(
+            client,
+            project_file.path,
+            line,
+            character,
         )
 
-        type_name = "unknown"
-        if hover_result and hover_result.get("contents"):
-            type_name = _infer_type_name_from_hover(hover_result["contents"])
-
-        # Step 2: Get type definition location
         type_def_result = await client.request(
             "textDocument/typeDefinition",
             {
@@ -464,50 +484,20 @@ async def type_info(
             },
         )
 
-        source_location: dict[str, Any] | None = None
+        source_location: PublicLocation | None = None
         fields: list[dict[str, Any]] = []
         methods: list[dict[str, Any]] = []
 
         if type_def_result:
-            # Handle array or single location
             type_loc = (
                 type_def_result[0]
                 if isinstance(type_def_result, list)
                 else type_def_result
             )
-            target_uri = type_loc.get("targetUri") or type_loc.get("uri")
-            target_range = type_loc.get("targetRange") or type_loc.get("range")
+            source_location = _type_source_location(type_loc)
 
-            if target_uri:
-                source_location = {
-                    "uri": target_uri,
-                    "range": lsp_result_to_public(target_range),
-                }
-
-                # Step 3: If local file, get document symbols for type members
-                if target_uri.startswith("file://") and is_project_file_uri(target_uri):
-                    type_file = resolve_project_file(target_uri)
-                    await open_file(client, type_file.path, type_file.uri)
-                    opened_uris.append(type_file.uri)
-
-                    symbols_result = await client.request(
-                        "textDocument/documentSymbol",
-                        {"textDocument": {"uri": type_file.uri}},
-                    )
-
-                    if symbols_result:
-                        # Find the type's symbols based on the target range
-                        # and extract properties and methods
-                        _extract_type_members(
-                            symbols_result,
-                            target_range,
-                            fields,
-                            methods,
-                            include_documentation,
-                        )
-
-        # Step 4: Get completions after temporarily inserting a dot after the
-        # identifier at the requested position.
+        # Get completions after temporarily inserting a dot after the identifier
+        # at the requested position.
         completion_items = await _get_member_completion_items(
             client,
             file_uri,
@@ -561,77 +551,47 @@ async def type_info(
 
         return TypeInfoResult.model_validate(
             {
-                "typeName": type_name,
+                **quickinfo,
                 "fields": fields,
                 "methods": {"items": paginated_methods, **method_metadata},
                 "sourceLocation": source_location,
             }
         )
     finally:
-        # Close all files we opened
-        for uri in opened_uris:
-            await close_file(client, uri)
+        await close_file(client, file_uri)
 
 
-def _extract_type_members(
-    symbols: list[dict[str, Any]],
-    target_range: dict[str, Any] | None,
-    fields: list[dict[str, Any]],
-    methods: list[dict[str, Any]],
-    include_documentation: bool,
-) -> None:
-    """Extract fields and methods from document symbols.
+async def _get_quickinfo(
+    client: Any,
+    file_path: Any,
+    line: int,
+    character: int,
+) -> dict[str, str | None]:
+    """Return exact tsserver quickinfo display fields for a public position."""
+    response = await client.request(
+        "workspace/executeCommand",
+        {
+            "command": "typescript.tsserverRequest",
+            "arguments": [
+                "quickinfo",
+                {
+                    "file": str(file_path),
+                    "line": max(line, 1),
+                    "offset": max(character, 1),
+                },
+            ],
+        },
+    )
+    body = response.get("body") if isinstance(response, dict) else None
+    if not isinstance(body, dict):
+        return {"displayString": "", "kind": None}
 
-    Recursively walks the symbol tree to find members of the target type.
-
-    Args:
-        symbols: List of document symbols from LSP
-        target_range: The range of the target type definition
-        fields: List to populate with field definitions
-        methods: List to populate with method definitions
-        include_documentation: Whether to include documentation strings
-    """
-    for symbol in symbols:
-        kind = symbol.get("kind", 0)
-        name = symbol.get("name", "")
-        detail = symbol.get("detail", "")
-        sym_range = symbol.get("range", {})
-
-        # Check if this symbol is within the target range (if specified)
-        if target_range:
-            target_start = target_range.get("start", {})
-            target_end = target_range.get("end", {})
-            sym_start = sym_range.get("start", {})
-
-            # Only include symbols within the target range
-            if sym_start.get("line", 0) < target_start.get("line", 0):
-                continue
-            if sym_start.get("line", 0) > target_end.get("line", float("inf")):
-                continue
-
-        # LSP SymbolKind: 6 = Method, 7 = Property, 8 = Field, 9 = Constructor
-        # 12 = Function, 13 = Variable
-        if kind in (6, 9, 12):  # Method, Constructor, Function
-            method_entry: dict[str, Any] = {
-                "name": name,
-                "signature": detail or "unknown",
-            }
-            if not any(m["name"] == name for m in methods):
-                methods.append(method_entry)
-        elif kind in (7, 8, 13):  # Property, Field, Variable
-            field_entry: dict[str, Any] = {
-                "name": name,
-                "type": detail or "unknown",
-            }
-            if not any(f["name"] == name for f in fields):
-                fields.append(field_entry)
-
-        # Recurse into children
-        children = symbol.get("children", [])
-        if children:
-            _extract_type_members(
-                children, None, fields, methods, include_documentation
-            )
+    display_string = body.get("displayString")
+    kind = body.get("kind")
+    return {
+        "displayString": display_string if isinstance(display_string, str) else "",
+        "kind": kind if isinstance(kind, str) else None,
+    }
 
 
 def _hover_contents_to_text(contents: Any) -> str:
@@ -650,34 +610,6 @@ def _hover_contents_to_text(contents: Any) -> str:
     if contents is None:
         return ""
     return str(contents)
-
-
-def _infer_type_name_from_hover(contents: Any) -> str:
-    text = _hover_contents_to_text(contents).strip()
-    if not text:
-        return "unknown"
-
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.strip().startswith("```")
-    ]
-    if not lines:
-        return "unknown"
-
-    signature = lines[0]
-    declaration_match = re.search(
-        r"\b(?:interface|class|type|enum)\s+([A-Za-z_$][\w$]*)",
-        signature,
-    )
-    if declaration_match:
-        return declaration_match.group(1)
-
-    colon_index = signature.rfind(":")
-    if colon_index != -1:
-        return signature[colon_index + 1 :].strip().rstrip(";")
-
-    return signature or "unknown"
 
 
 def _is_identifier_char(value: str) -> bool:

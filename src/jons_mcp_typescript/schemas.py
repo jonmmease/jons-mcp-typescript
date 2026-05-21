@@ -28,10 +28,10 @@ class PublicRange(BaseModel):
 class PublicLocation(BaseModel):
     """File URI and optional one-based range."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    uri: str | None = None
-    range: PublicRange | dict[str, Any] | None = None
+    uri: str
+    range: PublicRange | None = None
 
 
 class NavigationLocation(BaseModel):
@@ -74,14 +74,6 @@ class PaginatedResult(BaseModel, Generic[T]):
     limit: int = Field(..., ge=0)
     hasMore: bool
     nextOffset: int | None = None
-
-
-class ToolError(BaseModel):
-    """Simple tool error response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    error: str
 
 
 class FormatCodeResult(BaseModel):
@@ -169,7 +161,7 @@ class SymbolInfoResult(BaseModel):
 
 
 class TypeField(BaseModel):
-    """Field discovered by type_info."""
+    """Field discovered by type_info_of_reference."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -179,7 +171,7 @@ class TypeField(BaseModel):
 
 
 class TypeMethod(BaseModel):
-    """Method discovered by type_info."""
+    """Method discovered by type_info_of_reference."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -189,18 +181,19 @@ class TypeMethod(BaseModel):
 
 
 class TypeMethodsResult(PaginatedResult[TypeMethod]):
-    """Paginated methods in a type_info result."""
+    """Paginated methods in a type_info_of_reference result."""
 
 
 class TypeInfoResult(BaseModel):
-    """Result returned by type_info."""
+    """Result returned by type_info_of_reference."""
 
     model_config = ConfigDict(extra="forbid")
 
-    typeName: str
+    displayString: str
+    kind: str | None = None
     fields: list[TypeField]
     methods: TypeMethodsResult
-    sourceLocation: PublicLocation | dict[str, Any] | None = None
+    sourceLocation: PublicLocation | None = None
 
 
 class CheckError(BaseModel):

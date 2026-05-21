@@ -1,16 +1,15 @@
 """Public diagnostics and rename-preview tool behavior tests."""
 
+import inspect
 from pathlib import Path
 from typing import Any, get_type_hints
 
 import pytest
 
-from jons_mcp_typescript import server
 from jons_mcp_typescript.schemas import (
     DiagnosticsResult,
     RenamePreviewError,
     RenamePreviewResult,
-    ToolError,
 )
 from jons_mcp_typescript.tools import intelligence
 
@@ -35,7 +34,8 @@ def test_preview_rename_return_annotation_uses_public_models():
     diagnostics_hints = get_type_hints(intelligence.diagnostics)
 
     assert rename_hints["return"] == RenamePreviewResult | RenamePreviewError
-    assert diagnostics_hints["return"] == DiagnosticsResult | ToolError
+    assert diagnostics_hints["return"] == DiagnosticsResult
+    assert "scope" not in inspect.signature(intelligence.diagnostics).parameters
 
 
 @pytest.fixture
@@ -67,14 +67,7 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_diagnostics_file_scope_requires_file_path():
-    result = await intelligence.diagnostics(scope="file")
-
-    assert result == ToolError(error="file_path required when scope='file'")
-
-
-@pytest.mark.asyncio
-async def test_diagnostics_file_scope_sorts_paginates_and_closes(
+async def test_diagnostics_sorts_paginates_and_closes(
     tool_project: Path,
     monkeypatch: pytest.MonkeyPatch,
     harness: tuple[
@@ -137,41 +130,6 @@ async def test_diagnostics_closes_file_when_wait_fails(
 
     assert opened == closed
     assert project_loads == []
-
-
-@pytest.mark.asyncio
-async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
-    server.current_diagnostics.clear()
-    server.current_diagnostics["file:///b.ts"] = [
-        {
-            "severity": 2,
-            "range": {"start": {"line": 2, "character": 0}},
-            "message": "warn",
-        }
-    ]
-    server.current_diagnostics["file:///a.ts"] = [
-        {
-            "severity": 1,
-            "range": {"start": {"line": 1, "character": 0}},
-            "message": "err",
-        }
-    ]
-
-    try:
-        result = await intelligence.diagnostics(scope="workspace")
-
-        result_dict = result.model_dump(exclude_none=True)
-        assert [item["uri"] for item in result_dict["items"]] == [
-            "file:///a.ts",
-            "file:///b.ts",
-        ]
-        assert [item["range"]["start"] for item in result_dict["items"]] == [
-            {"line": 2, "character": 1},
-            {"line": 3, "character": 1},
-        ]
-    finally:
-        server.current_diagnostics.clear()
-
 
 @pytest.mark.asyncio
 async def test_preview_rename_returns_error_when_prepare_rename_rejects(

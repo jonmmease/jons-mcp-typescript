@@ -494,11 +494,17 @@ Use `check_all` as the default single-file quality check: it combines
 TypeScript diagnostics, Prettier, and ESLint into one response. Use `fix_all`
 for automatic ESLint fixes followed by Prettier formatting. Reach for
 `format_code`, `check_formatting`, or `lint_code` only when a single formatter
-or linter operation is specifically needed.
+or linter operation is specifically needed. Use `diagnostics` when you only need
+fresh TypeScript diagnostics for one file.
 
 `preview_rename` returns `edits`, a flat list of file URI, one-based replacement
 range, and `newText` values, plus `totalEdits`. It does not write files, so it
 is safe to call before deciding whether to apply edits.
+
+Use `symbol_info` for quick hover-style signature/type text and docs at a
+position. Use `type_info_of_reference` when you need structured TypeScript
+quickinfo plus the fields and methods available on a value reference at that
+position.
 
 ## Position Inputs And Results
 Tools that accept or return `line` and `character` use one-based positions to

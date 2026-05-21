@@ -12,7 +12,6 @@ from ..schemas import (
     RenamePreviewEdit,
     RenamePreviewError,
     RenamePreviewResult,
-    ToolError,
 )
 from ..server import (
     clear_diagnostics_for_uri,
@@ -39,50 +38,37 @@ from ..utils import (
 
 @mcp.tool()
 async def diagnostics(
-    file_path: str | None = None,
-    scope: str = "file",
+    file_path: str,
     limit: int = DEFAULT_LIMIT,
     offset: int = DEFAULT_OFFSET,
     ctx: Context | None = None,
-) -> DiagnosticsResult | ToolError:
-    """Get type errors and warnings.
+) -> DiagnosticsResult:
+    """Get fresh type errors and warnings for one file.
 
     Args:
-        file_path: Path to file (required if scope='file')
-        scope: 'file' (single file) or 'workspace' (all cached diagnostics)
-               Note: 'workspace' only shows diagnostics for files previously queried
+        file_path: Path to the TypeScript/JavaScript file
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: DiagnosticsResult, or ToolError when file_path is missing.
+    Returns: DiagnosticsResult with one-based diagnostic ranges.
     """
-    all_diagnostics = []
+    project_file = resolve_project_file(file_path)
+    client = await ensure_vtsls_indexed(file_path)
+    file_uri = project_file.uri
 
-    if scope == "file":
-        if not file_path:
-            return ToolError(error="file_path required when scope='file'")
-        project_file = resolve_project_file(file_path)
-        client = await ensure_vtsls_indexed(file_path)
-        file_uri = project_file.uri
+    try:
+        # Clear cached diagnostics and register event BEFORE opening file
+        clear_diagnostics_for_uri(file_uri)
+        register_diagnostics_event(file_uri)
 
-        try:
-            # Clear cached diagnostics and register event BEFORE opening file
-            clear_diagnostics_for_uri(file_uri)
-            register_diagnostics_event(file_uri)
+        # Open/sync file with fresh content from disk
+        await open_file(client, project_file.path, file_uri)
 
-            # Open/sync file with fresh content from disk
-            await open_file(client, project_file.path, file_uri)
-
-            # Wait for diagnostics to arrive via event (with timeout)
-            all_diagnostics = await wait_for_diagnostics(file_uri)
-        finally:
-            # Close file so vtsls reads from disk next time
-            await close_file(client, file_uri)
-
-    elif scope == "workspace":
-        # Return all cached diagnostics from previous queries
-        for uri, diags in current_diagnostics.items():
-            all_diagnostics.extend([{"uri": uri, **d} for d in diags])
+        # Wait for diagnostics to arrive via event (with timeout)
+        all_diagnostics = await wait_for_diagnostics(file_uri)
+    finally:
+        # Close file so vtsls reads from disk next time
+        await close_file(client, file_uri)
 
     if not all_diagnostics:
         return DiagnosticsResult(

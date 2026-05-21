@@ -69,7 +69,7 @@ def test_language_return_annotations_use_public_models():
     assert get_type_hints(language.references)["return"] == ReferencesResult
     assert get_type_hints(language.document_symbols)["return"] == DocumentSymbolsResult
     assert get_type_hints(language.symbol_info)["return"] == SymbolInfoResult
-    assert get_type_hints(language.type_info)["return"] == TypeInfoResult
+    assert get_type_hints(language.type_info_of_reference)["return"] == TypeInfoResult
 
 
 @pytest.mark.parametrize(
@@ -338,7 +338,7 @@ async def test_symbol_info_normalizes_hover_content(
 
 
 @pytest.mark.asyncio
-async def test_type_info_extracts_in_root_members_and_restores_document(
+async def test_type_info_uses_completion_members_and_restores_document(
     tool_project: Path,
     harness: tuple[
         FakeLanguageClient, list[str], list[str], list[str | None], list[str]
@@ -358,25 +358,14 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         "end": {"line": 11, "character": 2},
     }
     fake.responses = {
-        "textDocument/hover": {"contents": {"value": "User"}},
+        "workspace/executeCommand": {
+            "success": True,
+            "body": {"displayString": "const user: User", "kind": "const"},
+        },
         "textDocument/typeDefinition": {
             "uri": type_file.resolve().as_uri(),
             "range": type_range,
         },
-        "textDocument/documentSymbol": [
-            {
-                "name": "name",
-                "kind": 7,
-                "detail": "string",
-                "range": {"start": {"line": 1, "character": 2}},
-            },
-            {
-                "name": "save",
-                "kind": 6,
-                "detail": "() => void",
-                "range": {"start": {"line": 2, "character": 2}},
-            },
-        ],
         "textDocument/completion": {
             "items": [
                 {"label": "name", "kind": 10, "detail": "string"},
@@ -396,7 +385,7 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         },
     }
 
-    result = await language.type_info(
+    result = await language.type_info_of_reference(
         "src/main.ts",
         line=2,
         character=2,
@@ -404,7 +393,8 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
     )
 
     result_dict = result.model_dump(exclude_none=True)
-    assert result_dict["typeName"] == "User"
+    assert result_dict["displayString"] == "const user: User"
+    assert result_dict["kind"] == "const"
     assert result_dict["sourceLocation"] == {
         "uri": type_file.as_uri(),
         "range": public_type_range,
@@ -415,14 +405,19 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
     ]
     assert result_dict["methods"]["items"] == [
         {"name": "greet", "signature": "() => string", "documentation": "Greet docs"},
-        {"name": "save", "signature": "() => void"},
     ]
     assert [call[0] for call in fake.calls] == [
-        "textDocument/hover",
+        "workspace/executeCommand",
         "textDocument/typeDefinition",
-        "textDocument/documentSymbol",
         "textDocument/completion",
     ]
+    assert fake.calls[0][1] == {
+        "command": "typescript.tsserverRequest",
+        "arguments": [
+            "quickinfo",
+            {"file": str(source), "line": 2, "offset": 2},
+        ],
+    }
     assert project_loads == [str(source)]
     changed_texts = [
         params["contentChanges"][0]["text"]
@@ -433,12 +428,12 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
         "const user = makeUser();\nuser.;\n",
         "const user = makeUser();\nuser;\n",
     ]
-    assert opened == [source.as_uri(), type_file.as_uri()]
+    assert opened == [source.as_uri()]
     assert closed == opened
 
 
 @pytest.mark.asyncio
-async def test_type_info_infers_type_name_from_string_hover(
+async def test_type_info_returns_quickinfo_display_string_and_kind(
     tool_project: Path,
     harness: tuple[
         FakeLanguageClient, list[str], list[str], list[str | None], list[str]
@@ -448,17 +443,25 @@ async def test_type_info_infers_type_name_from_string_hover(
     source = tool_project / "src" / "main.ts"
     source.write_text("err;\n", encoding="utf-8")
     fake.responses = {
-        "textDocument/hover": {"contents": "```typescript\nlet err: Error\n```"},
+        "workspace/executeCommand": {
+            "success": True,
+            "body": {"displayString": "let err: Error", "kind": "let"},
+        },
         "textDocument/typeDefinition": None,
         "textDocument/completion": {"items": []},
     }
 
-    result = await language.type_info("src/main.ts", line=1, character=2)
+    result = await language.type_info_of_reference("src/main.ts", line=1, character=2)
 
     result_dict = result.model_dump(exclude_none=True)
-    assert result_dict["typeName"] == "Error"
+    assert result_dict["displayString"] == "let err: Error"
+    assert result_dict["kind"] == "let"
     assert result_dict["fields"] == []
     assert result_dict["methods"]["items"] == []
+    assert fake.calls[0][1]["arguments"] == [
+        "quickinfo",
+        {"file": str(source), "line": 1, "offset": 2},
+    ]
     assert project_loads == [str(source)]
     assert opened == [source.as_uri()]
     assert closed == opened
@@ -478,17 +481,21 @@ async def test_type_info_returns_external_source_without_opening_it(
     source.write_text("user;\n", encoding="utf-8")
     external.write_text("export interface External {}\n", encoding="utf-8")
     fake.responses = {
-        "textDocument/hover": {"contents": {"value": "External"}},
+        "workspace/executeCommand": {
+            "success": True,
+            "body": {"displayString": "const user: External", "kind": "const"},
+        },
         "textDocument/typeDefinition": {"uri": external.as_uri(), "range": {}},
         "textDocument/completion": {"items": []},
     }
 
-    result = await language.type_info("src/main.ts", line=1, character=2)
+    result = await language.type_info_of_reference("src/main.ts", line=1, character=2)
 
     result_dict = result.model_dump(exclude_none=True)
-    assert result_dict["sourceLocation"] == {"uri": external.as_uri(), "range": {}}
+    assert result_dict["displayString"] == "const user: External"
+    assert result_dict["sourceLocation"] == {"uri": external.as_uri()}
     assert [call[0] for call in fake.calls] == [
-        "textDocument/hover",
+        "workspace/executeCommand",
         "textDocument/typeDefinition",
         "textDocument/completion",
     ]
@@ -508,19 +515,19 @@ async def test_type_info_skips_completion_when_identifier_is_not_safe(
     source = tool_project / "src" / "main.ts"
     source.write_text(";\n", encoding="utf-8")
     fake.responses = {
-        "textDocument/hover": None,
+        "workspace/executeCommand": {"success": False},
         "textDocument/typeDefinition": None,
         "textDocument/completion": AssertionError("completion should not be requested"),
     }
 
-    result = await language.type_info("src/main.ts", line=1, character=1)
+    result = await language.type_info_of_reference("src/main.ts", line=1, character=1)
 
     result_dict = result.model_dump(exclude_none=True)
-    assert result_dict["typeName"] == "unknown"
+    assert result_dict["displayString"] == ""
     assert result_dict["fields"] == []
     assert result_dict["methods"]["items"] == []
     assert [call[0] for call in fake.calls] == [
-        "textDocument/hover",
+        "workspace/executeCommand",
         "textDocument/typeDefinition",
     ]
     assert project_loads == [str(source)]
