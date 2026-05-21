@@ -1,13 +1,13 @@
 """Unit tests for daemon client functionality."""
 
 import asyncio
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jons_mcp_typescript.constants import FORMAT_TIMEOUT, LINT_TIMEOUT
 from jons_mcp_typescript.daemon_client import FormatterLinterDaemon
 from jons_mcp_typescript.exceptions import DaemonError, DaemonTimeoutError
 
@@ -151,55 +151,6 @@ class TestDaemonMessageHandling:
             await daemon._handle_message(orphan_message)
 
 
-class TestDaemonJSONLinesProtocol:
-    """Test suite for JSON Lines protocol handling."""
-
-    def test_json_lines_format(self):
-        """Test JSON Lines format compliance."""
-        messages = [
-            {
-                "id": "req-1",
-                "version": 1,
-                "method": "format",
-                "params": {"filepath": "/test.ts", "content": "code"},
-            },
-            {
-                "id": "req-1",
-                "result": {"formatted": "formatted code"},
-            },
-        ]
-
-        for msg in messages:
-            json_line = json.dumps(msg)
-            # Each message must be single line
-            assert "\n" not in json_line
-            # Must be valid JSON
-            parsed = json.loads(json_line)
-            assert parsed == msg
-
-    @pytest.mark.asyncio
-    async def test_send_request_format(self):
-        """Test that send_request uses correct format."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            # Mock the process
-            daemon._process = MagicMock()
-            daemon._process.stdin = MagicMock()
-            daemon._process.poll = MagicMock(return_value=None)
-
-            # Mock the response
-            mock_response = {"formatted": "code"}
-
-            with patch.object(daemon, "send_request", return_value=mock_response):
-                result = await daemon.format(
-                    "/test.ts", "original code"
-                )
-                assert result == {"formatted": "code"}
-
-
 class TestDaemonRequestTimeout:
     """Test suite for request timeout handling."""
 
@@ -332,123 +283,93 @@ class TestDaemonReadySignal:
                                     await daemon.start()
 
 
-class TestDaemonFormatMethods:
-    """Test suite for daemon format/lint methods."""
+@pytest.mark.parametrize(
+    ("call_name", "args", "expected_method", "expected_params", "expected_timeout"),
+    [
+        (
+            "format",
+            ("/test.ts", "original code"),
+            "format",
+            {
+                "filepath": "/test.ts",
+                "content": "original code",
+                "projectRoot": "/project",
+            },
+            FORMAT_TIMEOUT,
+        ),
+        (
+            "check_formatting",
+            ("/test.ts", "code"),
+            "check",
+            {
+                "filepath": "/test.ts",
+                "content": "code",
+                "projectRoot": "/project",
+            },
+            FORMAT_TIMEOUT,
+        ),
+        (
+            "lint",
+            ("/test.ts", "code", True),
+            "lint",
+            {
+                "filepath": "/test.ts",
+                "content": "code",
+                "projectRoot": "/project",
+                "fix": True,
+            },
+            LINT_TIMEOUT,
+        ),
+        (
+            "get_prettier_config",
+            ("/test.ts",),
+            "getConfig",
+            {
+                "filepath": "/test.ts",
+                "tool": "prettier",
+                "projectRoot": "/project",
+            },
+            10.0,
+        ),
+        (
+            "get_eslint_config",
+            ("/test.ts",),
+            "getConfig",
+            {
+                "filepath": "/test.ts",
+                "tool": "eslint",
+                "projectRoot": "/project",
+            },
+            10.0,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_daemon_public_methods_send_expected_requests(
+    call_name: str,
+    args: tuple,
+    expected_method: str,
+    expected_params: dict,
+    expected_timeout: float,
+):
+    """Public wrapper methods should preserve the daemon wire contract."""
+    daemon = FormatterLinterDaemon(Path("/daemon.js"), Path("/project"))
+    mock_result = {"ok": True}
 
-    @pytest.mark.asyncio
-    async def test_format_method(self):
-        """Test format method."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
+    with patch.object(
+        daemon,
+        "send_request",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ) as send_request:
+        result = await getattr(daemon, call_name)(*args)
 
-            mock_result = {"formatted": "formatted code", "configPath": None}
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.format("/test.ts", "original code")
-                assert result == mock_result
-
-    @pytest.mark.asyncio
-    async def test_check_formatting_method(self):
-        """Test check_formatting method."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            mock_result = {"isFormatted": True, "configPath": None}
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.check_formatting("/test.ts", "code")
-                assert result == mock_result
-
-    @pytest.mark.asyncio
-    async def test_lint_method(self):
-        """Test lint method."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            mock_result = {
-                "messages": [
-                    {
-                        "ruleId": "no-unused-vars",
-                        "severity": 2,
-                        "message": "Variable is defined but never used",
-                    }
-                ],
-                "configPath": None,
-            }
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.lint("/test.ts", "code")
-                assert result == mock_result
-
-    @pytest.mark.asyncio
-    async def test_lint_with_fix(self):
-        """Test lint method with fix enabled."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            mock_result = {
-                "messages": [],
-                "fixedContent": "fixed code",
-                "configPath": None,
-            }
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.lint("/test.ts", "code", fix=True)
-                assert result == mock_result
-
-    @pytest.mark.asyncio
-    async def test_get_prettier_config(self):
-        """Test get_prettier_config method."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            mock_result = {
-                "config": {"singleQuote": True},
-                "configPath": "/path/to/.prettierrc",
-            }
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.get_prettier_config("/test.ts")
-                assert result == mock_result
-
-    @pytest.mark.asyncio
-    async def test_get_eslint_config(self):
-        """Test get_eslint_config method."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            daemon = FormatterLinterDaemon(Path(tmpdir) / "daemon.js", project_root)
-            daemon._loop = asyncio.get_running_loop()
-
-            mock_result = {
-                "config": {"extends": "eslint:recommended"},
-                "configPath": "/path/to/.eslintrc.json",
-            }
-
-            with patch.object(
-                daemon, "send_request", return_value=mock_result
-            ):
-                result = await daemon.get_eslint_config("/test.ts")
-                assert result == mock_result
+    assert result == mock_result
+    send_request.assert_awaited_once_with(
+        expected_method,
+        expected_params,
+        timeout=expected_timeout,
+    )
 
 
 class TestDaemonLifecycle:

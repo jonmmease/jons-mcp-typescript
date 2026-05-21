@@ -122,6 +122,45 @@ ESLINT_AVAILABLE = is_eslint_available()
 DAEMON_DIR = Path(__file__).parent.parent / "src" / "jons_mcp_typescript" / "daemon"
 
 
+def start_raw_daemon(project_root: Path) -> subprocess.Popen:
+    """Start the daemon directly so tests can inspect raw JSON-lines output."""
+    return subprocess.Popen(
+        ["node", str(DAEMON_DIR / "index.js")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd=str(project_root),
+    )
+
+
+def read_json_line(process: subprocess.Popen) -> dict:
+    """Read one daemon stdout line and assert it is valid JSON."""
+    assert process.stdout is not None
+    line = process.stdout.readline()
+    assert line
+    return json.loads(line)
+
+
+def write_daemon_line(process: subprocess.Popen, line: str) -> None:
+    """Write one raw JSON-lines protocol line to daemon stdin."""
+    assert process.stdin is not None
+    process.stdin.write(line + "\n")
+    process.stdin.flush()
+
+
+def stop_raw_daemon(process: subprocess.Popen) -> None:
+    """Terminate a raw daemon process created by start_raw_daemon."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def link_project_node_modules(project_root: Path) -> None:
     """Give a temp project local Node deps by linking the daemon dev install."""
     source = DAEMON_DIR / "node_modules"
@@ -376,6 +415,86 @@ greet("World")
 # =============================================================================
 # Daemon Integration Tests
 # =============================================================================
+
+
+@pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js not available")
+class TestDaemonProtocolIntegration:
+    """Raw daemon protocol tests backed by the real JavaScript process."""
+
+    def test_ready_signal_is_json_on_stdout(self, simple_ts_project: Path):
+        """The daemon should emit a JSON ready event as its first stdout line."""
+        process = start_raw_daemon(simple_ts_project)
+        try:
+            assert read_json_line(process) == {"event": "ready", "version": 1}
+        finally:
+            stop_raw_daemon(process)
+
+    def test_malformed_json_returns_protocol_error(self, simple_ts_project: Path):
+        """Malformed input should produce a JSONParseError response."""
+        process = start_raw_daemon(simple_ts_project)
+        try:
+            assert read_json_line(process)["event"] == "ready"
+
+            write_daemon_line(process, "not json")
+            response = read_json_line(process)
+
+            assert response["id"] == "unknown"
+            assert response["error"]["code"] == -32700
+            assert response["error"]["data"]["type"] == "JSONParseError"
+            assert response["error"]["data"]["retryable"] is False
+        finally:
+            stop_raw_daemon(process)
+
+    def test_missing_params_returns_json_error(self, simple_ts_project: Path):
+        """Request validation errors should stay on the JSON-lines channel."""
+        process = start_raw_daemon(simple_ts_project)
+        try:
+            assert read_json_line(process)["event"] == "ready"
+
+            request = {
+                "id": "req-1",
+                "version": 1,
+                "method": "format",
+                "params": {},
+            }
+            write_daemon_line(process, json.dumps(request))
+            response = read_json_line(process)
+
+            assert response["id"] == "req-1"
+            assert response["error"]["code"] == -32000
+            assert response["error"]["data"]["type"] == "InternalError"
+            assert "Missing required params" in response["error"]["message"]
+        finally:
+            stop_raw_daemon(process)
+
+    def test_dependency_missing_response_is_actionable(self, simple_ts_project: Path):
+        """Missing project dependencies should identify the package and install."""
+        process = start_raw_daemon(simple_ts_project)
+        try:
+            assert read_json_line(process)["event"] == "ready"
+
+            file_path = simple_ts_project / "src" / "index.ts"
+            request = {
+                "id": "req-2",
+                "version": 1,
+                "method": "format",
+                "params": {
+                    "projectRoot": str(simple_ts_project),
+                    "filepath": str(file_path),
+                    "content": "",
+                },
+            }
+            write_daemon_line(process, json.dumps(request))
+            response = read_json_line(process)
+
+            error = response["error"]
+            assert response["id"] == "req-2"
+            assert error["code"] == -32005
+            assert error["data"]["type"] == "DependencyMissing"
+            assert error["data"]["packageName"] == "prettier"
+            assert error["data"]["installCommand"] == "npm install -D prettier"
+        finally:
+            stop_raw_daemon(process)
 
 
 @pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js not available")
@@ -896,21 +1015,6 @@ class TestVtslsIntegration:
 @pytest.mark.skipif(not NODE_AVAILABLE, reason="Node.js not available")
 class TestErrorScenarios:
     """Test error handling scenarios."""
-
-    @pytest.mark.asyncio
-    async def test_daemon_invalid_json(self, simple_ts_project: Path):
-        """Test handling of malformed JSON in daemon communication."""
-        daemon = FormatterLinterDaemon.create(simple_ts_project)
-
-        try:
-            await daemon.start()
-
-            # Valid request should work
-            result = await daemon.send_request("ping", {})
-            assert result == {"ok": True}
-
-        finally:
-            await daemon.shutdown()
 
     @pytest.mark.asyncio
     async def test_daemon_missing_params(self, simple_ts_project: Path):

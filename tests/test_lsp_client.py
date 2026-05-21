@@ -56,15 +56,22 @@ class TestProcessWatchdog:
 
     @pytest.mark.asyncio
     async def test_monitor_process_crash_and_restart(self, mock_vtsls_process: MagicMock):
-        """Test that watchdog tracks restart count on process restart."""
+        """Test watchdog restarts a crashed process and returns the replacement."""
         watchdog = ProcessWatchdog(max_restarts=1, restart_delay=0.01)
+        restarted_process = MagicMock()
+        mock_vtsls_process.poll = MagicMock(return_value=1)
+        mock_vtsls_process.returncode = 1
+        restarted_process.poll = MagicMock(return_value=None)
 
-        # Increment restart count to simulate a restart
-        watchdog.restart_count = 1
+        async def restart() -> MagicMock:
+            watchdog.stop()
+            return restarted_process
 
-        # Verify restart count is tracked
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await watchdog.monitor(mock_vtsls_process, restart)
+
+        assert result == restarted_process
         assert watchdog.restart_count == 1
-        assert watchdog.max_restarts == 1
 
     @pytest.mark.asyncio
     async def test_monitor_max_restarts_exceeded(self, mock_vtsls_process: MagicMock):
@@ -388,42 +395,3 @@ class TestVtslsClientWorkspaceConfiguration:
                 # The config is merged (updated) with the base config
                 assert result[0]["customKey"] == "customValue"
                 assert "preferences" in result[0]  # Base preferences still there
-
-
-class TestVtslsClientMessageQueue:
-    """Test suite for message queue handling."""
-
-    def test_message_queue_initialization(self, temp_project: Path):
-        """Test that message queue is properly initialized."""
-        with patch.object(VtslsClient, "_find_vtsls", return_value="vtsls"):
-            client = VtslsClient(temp_project)
-            assert hasattr(client, "_message_queue")
-            assert client._message_queue.empty()
-
-    @pytest.mark.asyncio
-    async def test_pending_requests_management(self):
-        """Test management of pending requests."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            project_root = Path(tmpdir)
-            (project_root / "package.json").write_text('{"name": "test"}')
-
-            with patch.object(VtslsClient, "_find_vtsls", return_value="vtsls"):
-                client = VtslsClient(project_root)
-
-                # Create multiple pending requests
-                futures = []
-                for i in range(3):
-                    future = asyncio.Future()
-                    client.pending_requests[i] = future
-                    futures.append(future)
-
-                assert len(client.pending_requests) == 3
-
-                # Resolve one request
-                client.pending_requests[0].set_result("result")
-                assert len(client.pending_requests) == 3
-                assert futures[0].done()
-
-                # Clean up
-                client.pending_requests.pop(0)
-                assert len(client.pending_requests) == 2
