@@ -34,6 +34,35 @@ class PublicLocation(BaseModel):
     range: PublicRange | dict[str, Any] | None = None
 
 
+class NavigationLocation(BaseModel):
+    """Normalized target returned by navigation tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str = Field(..., description="File URI for the navigation target.")
+    range: PublicRange | dict[str, Any] | None = Field(
+        default=None,
+        description="One-based precise target range.",
+    )
+    fullRange: PublicRange | dict[str, Any] | None = Field(
+        default=None,
+        description="One-based full target range when the language server provides it.",
+    )
+    originRange: PublicRange | dict[str, Any] | None = Field(
+        default=None,
+        description="One-based range of the originating symbol when available.",
+    )
+
+
+class NavigationResult(BaseModel):
+    """Result returned by definition, type_definition, and implementation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[NavigationLocation]
+    totalItems: int = Field(..., ge=0)
+
+
 class PaginatedResult(BaseModel, Generic[T]):
     """Common paginated result envelope."""
 

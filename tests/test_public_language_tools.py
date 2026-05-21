@@ -7,6 +7,7 @@ import pytest
 
 from jons_mcp_typescript.schemas import (
     DocumentSymbolsResult,
+    NavigationResult,
     ReferencesResult,
     SymbolInfoResult,
     TypeInfoResult,
@@ -62,6 +63,9 @@ def harness(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_language_return_annotations_use_public_models():
+    assert get_type_hints(language.definition)["return"] == NavigationResult
+    assert get_type_hints(language.type_definition)["return"] == NavigationResult
+    assert get_type_hints(language.implementation)["return"] == NavigationResult
     assert get_type_hints(language.references)["return"] == ReferencesResult
     assert get_type_hints(language.document_symbols)["return"] == DocumentSymbolsResult
     assert get_type_hints(language.symbol_info)["return"] == SymbolInfoResult
@@ -95,9 +99,14 @@ async def test_navigation_tools_open_request_and_close(
 
     result = await tool("src/main.ts", line=2, character=3)
 
-    assert result == {
-        "uri": "file:///project/src/main.ts",
-        "range": {"start": {"line": 3, "character": 5}},
+    assert result.model_dump(exclude_none=True) == {
+        "items": [
+            {
+                "uri": "file:///project/src/main.ts",
+                "range": {"start": {"line": 3, "character": 5}},
+            }
+        ],
+        "totalItems": 1,
     }
     assert ensure_calls == ["src/main.ts"]
     assert project_loads == [str(source)]
@@ -111,6 +120,106 @@ async def test_navigation_tools_open_request_and_close(
             },
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("tool", "lsp_method"),
+    [
+        (language.definition, "textDocument/definition"),
+        (language.type_definition, "textDocument/typeDefinition"),
+        (language.implementation, "textDocument/implementation"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_navigation_tools_normalize_location_links(
+    tool_project: Path,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+    tool: Any,
+    lsp_method: str,
+):
+    fake, _opened, _closed, _ensure_calls, _project_loads = harness
+    fake.responses[lsp_method] = [
+        {
+            "originSelectionRange": {
+                "start": {"line": 1, "character": 2},
+                "end": {"line": 1, "character": 8},
+            },
+            "targetUri": "file:///project/src/types.ts",
+            "targetRange": {
+                "start": {"line": 4, "character": 0},
+                "end": {"line": 6, "character": 1},
+            },
+            "targetSelectionRange": {
+                "start": {"line": 4, "character": 16},
+                "end": {"line": 4, "character": 22},
+            },
+        },
+        {
+            "originSelectionRange": {
+                "start": {"line": 1, "character": 2},
+                "end": {"line": 1, "character": 8},
+            },
+            "targetUri": "file:///project/src/types.ts",
+            "targetRange": {
+                "start": {"line": 4, "character": 0},
+                "end": {"line": 6, "character": 1},
+            },
+            "targetSelectionRange": {
+                "start": {"line": 4, "character": 16},
+                "end": {"line": 4, "character": 22},
+            },
+        },
+    ]
+
+    result = await tool("src/main.ts", line=2, character=3)
+
+    assert result.model_dump(exclude_none=True) == {
+        "items": [
+            {
+                "uri": "file:///project/src/types.ts",
+                "range": {
+                    "start": {"line": 5, "character": 17},
+                    "end": {"line": 5, "character": 23},
+                },
+                "fullRange": {
+                    "start": {"line": 5, "character": 1},
+                    "end": {"line": 7, "character": 2},
+                },
+                "originRange": {
+                    "start": {"line": 2, "character": 3},
+                    "end": {"line": 2, "character": 9},
+                },
+            }
+        ],
+        "totalItems": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("tool", "lsp_method"),
+    [
+        (language.definition, "textDocument/definition"),
+        (language.type_definition, "textDocument/typeDefinition"),
+        (language.implementation, "textDocument/implementation"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_navigation_tools_return_empty_result_for_missing_targets(
+    tool_project: Path,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+    tool: Any,
+    lsp_method: str,
+):
+    fake, _opened, _closed, _ensure_calls, _project_loads = harness
+    fake.responses[lsp_method] = None
+
+    result = await tool("src/main.ts", line=2, character=3)
+
+    assert result == NavigationResult(items=[], totalItems=0)
 
 
 @pytest.mark.asyncio

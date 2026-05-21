@@ -12,6 +12,7 @@ from fastmcp import Context
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
 from ..schemas import (
     DocumentSymbolsResult,
+    NavigationResult,
     ReferencesResult,
     SymbolInfoResult,
     TypeInfoResult,
@@ -34,13 +35,71 @@ from ..utils import (
 )
 
 
+def _normalize_navigation_result(result: Any) -> NavigationResult:
+    """Normalize LSP Location/LocationLink results for public tool responses."""
+    if not result:
+        return NavigationResult(items=[], totalItems=0)
+
+    raw_items = result if isinstance(result, list) else [result]
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for raw_item in raw_items:
+        item = _normalize_navigation_item(raw_item)
+        if item is None:
+            continue
+
+        key = (
+            item["uri"],
+            repr(item.get("range")),
+            repr(item.get("fullRange")),
+            repr(item.get("originRange")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+
+    return NavigationResult.model_validate({"items": items, "totalItems": len(items)})
+
+
+def _normalize_navigation_item(raw_item: Any) -> dict[str, Any] | None:
+    """Normalize one LSP Location or LocationLink item."""
+    if not isinstance(raw_item, dict):
+        return None
+
+    target_uri = raw_item.get("targetUri")
+    if isinstance(target_uri, str):
+        target_range = raw_item.get("targetRange")
+        selection_range = raw_item.get("targetSelectionRange") or target_range
+        item: dict[str, Any] = {"uri": target_uri}
+        if selection_range is not None:
+            item["range"] = lsp_result_to_public(selection_range)
+        if target_range is not None and target_range != selection_range:
+            item["fullRange"] = lsp_result_to_public(target_range)
+        origin_range = raw_item.get("originSelectionRange")
+        if origin_range is not None:
+            item["originRange"] = lsp_result_to_public(origin_range)
+        return item
+
+    uri = raw_item.get("uri")
+    if isinstance(uri, str):
+        item = {"uri": uri}
+        range_obj = raw_item.get("range")
+        if range_obj is not None:
+            item["range"] = lsp_result_to_public(range_obj)
+        return item
+
+    return None
+
+
 @mcp.tool()
 async def definition(
     file_path: str,
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict | list | None:
+) -> NavigationResult:
     """Jump to where a symbol is defined.
 
     Args:
@@ -48,7 +107,7 @@ async def definition(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: File location dict, list of file location dicts, or None if not found
+    Returns: NavigationResult with normalized target locations and one-based ranges.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -66,12 +125,7 @@ async def definition(
             },
         )
 
-        # Handle single location or list of linked locations
-        if isinstance(result, dict):
-            return lsp_result_to_public(result)
-        elif isinstance(result, list):
-            return lsp_result_to_public(result)
-        return None
+        return _normalize_navigation_result(result)
     finally:
         await close_file(client, file_uri)
 
@@ -82,7 +136,7 @@ async def type_definition(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict | list | None:
+) -> NavigationResult:
     """Jump to the type definition of a symbol.
 
     Args:
@@ -90,7 +144,7 @@ async def type_definition(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: File location dict, list of file location dicts, or None if not found
+    Returns: NavigationResult with normalized target locations and one-based ranges.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -108,12 +162,7 @@ async def type_definition(
             },
         )
 
-        # Handle single location or list of linked locations
-        if isinstance(result, dict):
-            return lsp_result_to_public(result)
-        elif isinstance(result, list):
-            return lsp_result_to_public(result)
-        return None
+        return _normalize_navigation_result(result)
     finally:
         await close_file(client, file_uri)
 
@@ -124,7 +173,7 @@ async def implementation(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict | list | None:
+) -> NavigationResult:
     """Find implementations of interfaces or abstract classes.
 
     Args:
@@ -132,7 +181,7 @@ async def implementation(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: File location dict, list of file location dicts, or None if not found
+    Returns: NavigationResult with normalized target locations and one-based ranges.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -150,12 +199,7 @@ async def implementation(
             },
         )
 
-        # Handle single location or list of linked locations
-        if isinstance(result, dict):
-            return lsp_result_to_public(result)
-        elif isinstance(result, list):
-            return lsp_result_to_public(result)
-        return None
+        return _normalize_navigation_result(result)
     finally:
         await close_file(client, file_uri)
 

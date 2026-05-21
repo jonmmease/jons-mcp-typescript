@@ -184,9 +184,20 @@ def position_of(text: str, needle: str, occurrence: int = 1) -> dict[str, int]:
     }
 
 
-def location_basenames(result: dict | list | None) -> set[str]:
-    """Extract file basenames from LSP locations or location links."""
-    items = result if isinstance(result, list) else ([result] if result else [])
+def location_basenames(result: object) -> set[str]:
+    """Extract file basenames from normalized locations or raw LSP locations."""
+    if hasattr(result, "model_dump"):
+        result = result.model_dump(exclude_none=True)
+
+    if isinstance(result, dict) and isinstance(result.get("items"), list):
+        items = result["items"]
+    elif isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        items = [result]
+    else:
+        items = []
+
     basenames = set()
     for item in items:
         if isinstance(item, dict):
