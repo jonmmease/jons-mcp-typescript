@@ -5,11 +5,14 @@ import json
 import logging
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
+from inspect import iscoroutinefunction
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .constants import REQUEST_TIMEOUT
 from .exceptions import LSPRequestError, ProcessCrashError, VtslsNotFoundError
@@ -32,11 +35,11 @@ class ProcessWatchdog:
         self.restart_count = 0
         self._stopped = False
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the restart counter (call after successful operations)."""
         self.restart_count = 0
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop monitoring."""
         self._stopped = True
 
@@ -83,23 +86,21 @@ def read_tsconfig(project_root: Path) -> dict[str, Any]:
     config_path = project_root / "tsconfig.json"
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
-                # Note: tsconfig.json may have comments, but we'll try basic JSON first
-                content = f.read()
-                # Strip single-line comments (crude but works for most cases)
-                lines = []
-                for line in content.split("\n"):
-                    stripped = line.strip()
-                    if not stripped.startswith("//"):
-                        # Remove trailing comments
-                        comment_idx = line.find("//")
-                        if comment_idx >= 0:
-                            line = line[:comment_idx]
-                        lines.append(line)
-                content = "\n".join(lines)
-                config = json.loads(content)
-                logger.info(f"Loaded tsconfig.json from {config_path}")
-                return config
+            content = config_path.read_text()
+            # Strip single-line comments (crude but works for most cases)
+            lines = []
+            for line in content.split("\n"):
+                stripped = line.strip()
+                if not stripped.startswith("//"):
+                    # Remove trailing comments
+                    comment_idx = line.find("//")
+                    if comment_idx >= 0:
+                        line = line[:comment_idx]
+                    lines.append(line)
+            content = "\n".join(lines)
+            config = json.loads(content)
+            logger.info(f"Loaded tsconfig.json from {config_path}")
+            return config if isinstance(config, dict) else {}
         except Exception as e:
             logger.warning(f"Failed to read tsconfig.json: {e}")
     return {}
@@ -193,7 +194,7 @@ class VtslsClient:
                 )
                 if node_path.exists():
                     logger.info(f"Found vtsls via npm global: {node_path}")
-                    return f"node {node_path}"
+                return f"node {shlex.quote(str(node_path))}"
 
                 # Also check without 'lib' (some npm configurations)
                 alt_path = (
@@ -206,7 +207,7 @@ class VtslsClient:
                 )
                 if alt_path.exists():
                     logger.info(f"Found vtsls via npm global (alt): {alt_path}")
-                    return f"node {alt_path}"
+                    return f"node {shlex.quote(str(alt_path))}"
         except subprocess.TimeoutExpired:
             logger.warning("npm prefix -g timed out")
         except FileNotFoundError:
@@ -225,7 +226,7 @@ class VtslsClient:
         )
         if local_vtsls.exists():
             logger.info(f"Found vtsls in local node_modules: {local_vtsls}")
-            return f"node {local_vtsls}"
+            return f"node {shlex.quote(str(local_vtsls))}"
 
         raise VtslsNotFoundError(
             "vtsls not found. Install it with: npm install -g @vtsls/language-server"
@@ -235,7 +236,7 @@ class VtslsClient:
         """Check if the client is initialized."""
         return self._initialized
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the vtsls process and initialize communication."""
         if self.process:
             raise RuntimeError("Already started")
@@ -255,15 +256,18 @@ class VtslsClient:
         self._watchdog = ProcessWatchdog(max_restarts=3, restart_delay=1.0)
         self._watchdog_task = asyncio.create_task(self._run_watchdog())
 
-    async def _start_process(self):
+    async def _start_process(self) -> None:
         """Start the vtsls subprocess and reader threads."""
         # Start process with unbuffered output
         env = os.environ.copy()
         env["NODE_NO_WARNINGS"] = "1"  # Suppress Node.js warnings
 
         try:
-            # Split command for subprocess
-            cmd_parts = self.vtsls_path.split()
+            # Split command for subprocess while preserving quoted paths.
+            if Path(self.vtsls_path).exists():
+                cmd_parts = [self.vtsls_path]
+            else:
+                cmd_parts = shlex.split(self.vtsls_path)
             # Add --stdio flag if not already present
             if "--stdio" not in cmd_parts:
                 cmd_parts.append("--stdio")
@@ -278,7 +282,7 @@ class VtslsClient:
                 bufsize=0,  # Unbuffered
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to start vtsls: {e}")
+            raise RuntimeError(f"Failed to start vtsls: {e}") from e
 
         # Reset shutdown flag
         self._shutting_down = False
@@ -292,15 +296,18 @@ class VtslsClient:
         # Process messages from queue
         asyncio.create_task(self._process_messages())
 
-    def _reader_loop(self):
+    def _reader_loop(self) -> None:
         """Read messages from stdout in a thread."""
         buffer = b""
         logger.debug("Reader thread started")
 
         while self.process and not self._shutting_down:
             try:
+                stdout = self.process.stdout
+                if stdout is None:
+                    break
                 # Read one byte at a time to avoid blocking
-                byte = self.process.stdout.read(1)
+                byte = stdout.read(1)
                 if not byte:
                     logger.debug("Reader thread: EOF")
                     break
@@ -328,7 +335,7 @@ class VtslsClient:
                 # Read content body
                 content_start = header_end + 4
                 while len(buffer) < content_start + content_length:
-                    chunk = self.process.stdout.read(
+                    chunk = stdout.read(
                         min(4096, content_start + content_length - len(buffer))
                     )
                     if not chunk:
@@ -356,7 +363,7 @@ class VtslsClient:
                     logger.error(f"Error in reader thread: {e}")
                 break
 
-    def _stderr_loop(self):
+    def _stderr_loop(self) -> None:
         """Read stderr in a thread to prevent deadlock."""
         while self.process and self.process.stderr and not self._shutting_down:
             try:
@@ -373,7 +380,7 @@ class VtslsClient:
             except Exception:
                 break
 
-    async def _process_messages(self):
+    async def _process_messages(self) -> None:
         """Process messages from the queue."""
         logger.debug("Message processor started")
         while not self._shutting_down:
@@ -393,7 +400,7 @@ class VtslsClient:
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
 
-    async def _handle_message(self, message: dict[str, Any]):
+    async def _handle_message(self, message: dict[str, Any]) -> None:
         """Handle incoming LSP message."""
         logger.debug(f"Received: {json.dumps(message)[:500]}")
 
@@ -459,7 +466,7 @@ class VtslsClient:
             if handler:
                 try:
                     # Check if handler is async
-                    if asyncio.iscoroutinefunction(handler):
+                    if iscoroutinefunction(handler):
                         await handler(params)
                     else:
                         handler(params)
@@ -519,7 +526,7 @@ class VtslsClient:
 
         return result
 
-    async def _initialize(self):
+    async def _initialize(self) -> None:
         """Send LSP initialize request."""
         logger.debug("Sending initialize request...")
 
@@ -528,11 +535,11 @@ class VtslsClient:
             {
                 "processId": os.getpid(),
                 "clientInfo": {"name": "typescript-mcp", "version": "0.1.0"},
-                "rootUri": f"file://{self.project_root.absolute()}",
+                "rootUri": self.project_root.absolute().as_uri(),
                 "rootPath": str(self.project_root.absolute()),
                 "workspaceFolders": [
                     {
-                        "uri": f"file://{self.project_root.absolute()}",
+                        "uri": self.project_root.absolute().as_uri(),
                         "name": self.project_root.name,
                     }
                 ],
@@ -717,9 +724,9 @@ class VtslsClient:
                 f"Request {method} timed out after {self.request_timeout}s",
                 code=-32004,
                 is_retryable=True,
-            )
+            ) from None
 
-    async def notify(self, method: str, params: Any = None):
+    async def notify(self, method: str, params: Any = None) -> None:
         """Send notification (no response expected).
 
         Args:
@@ -730,7 +737,7 @@ class VtslsClient:
             {"jsonrpc": "2.0", "method": method, "params": params or {}}
         )
 
-    async def _send_message(self, message: dict[str, Any]):
+    async def _send_message(self, message: dict[str, Any]) -> None:
         """Send message to vtsls.
 
         Args:
@@ -743,16 +750,17 @@ class VtslsClient:
             raise RuntimeError("Process not running")
 
         content = json.dumps(message).encode("utf-8")
-        header = f"Content-Length: {len(content)}\r\n\r\n".encode("utf-8")
+        header = f"Content-Length: {len(content)}\r\n\r\n".encode()
 
         # Thread-safe write
         with self._writer_lock:
             self.process.stdin.write(header + content)
             self.process.stdin.flush()
 
-        logger.debug(f"Sent: {message.get('method', f'response to {message.get('id')}')} ")
+        description = message.get("method", f"response to {message.get('id')}")
+        logger.debug(f"Sent: {description}")
 
-    def on_notification(self, method: str, handler: Callable):
+    def on_notification(self, method: str, handler: Callable[..., Any]) -> None:
         """Register notification handler.
 
         Args:
@@ -761,7 +769,7 @@ class VtslsClient:
         """
         self.notification_handlers[method] = handler
 
-    async def _run_watchdog(self):
+    async def _run_watchdog(self) -> None:
         """Run the process watchdog."""
         if not self._watchdog or not self.process:
             return
@@ -792,7 +800,7 @@ class VtslsClient:
         self._initialized = False
 
         # Clear pending requests with error
-        for request_id, future in list(self.pending_requests.items()):
+        for _request_id, future in list(self.pending_requests.items()):
             if not future.done():
                 future.set_exception(
                     LSPRequestError(
@@ -817,9 +825,11 @@ class VtslsClient:
         await self._initialize()
 
         logger.info("vtsls restarted successfully")
+        if self.process is None:
+            raise RuntimeError("vtsls restart did not create a process")
         return self.process
 
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         """Shutdown the language server gracefully."""
         if not self.process:
             return

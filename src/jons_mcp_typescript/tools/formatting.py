@@ -3,10 +3,12 @@
 Provides code formatting, formatting checks, and config resolution using Prettier.
 """
 
+from typing import Any
+
 from fastmcp import Context
 
 from ..exceptions import PrettierConfigError, PrettierParseError
-from ..server import get_daemon, mcp
+from ..server import get_daemon, mcp, resolve_project_file
 
 
 @mcp.tool()
@@ -33,18 +35,20 @@ async def format_code(
         PrettierConfigError: If Prettier configuration cannot be found or loaded
         PrettierParseError: If the code cannot be parsed
     """
+    project_file = resolve_project_file(file_path, must_exist=code is None)
     daemon = get_daemon()
 
     # Read content if not provided
     if code is None:
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                code = f.read()
-        except (IOError, OSError) as e:
-            raise PrettierConfigError(f"Failed to read file {file_path}: {e}")
+            code = project_file.path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise PrettierConfigError(
+                f"Failed to read file {project_file.path}: {e}"
+            ) from e
 
     try:
-        result = await daemon.format(file_path, code)
+        result = await daemon.format(str(project_file.path), code)
 
         # Extract the formatted code and determine if it changed
         formatted_code = result.get("formatted", code)
@@ -58,9 +62,9 @@ async def format_code(
     except Exception as e:
         error_msg = str(e)
         if "Parse error" in error_msg or "Parsing" in error_msg:
-            raise PrettierParseError(f"Failed to parse code: {error_msg}")
+            raise PrettierParseError(f"Failed to parse code: {error_msg}") from e
         elif "Config" in error_msg or "config" in error_msg:
-            raise PrettierConfigError(f"Config error: {error_msg}")
+            raise PrettierConfigError(f"Config error: {error_msg}") from e
         raise
 
 
@@ -87,18 +91,20 @@ async def check_formatting(
         PrettierConfigError: If Prettier configuration cannot be found or loaded
         PrettierParseError: If the code cannot be parsed
     """
+    project_file = resolve_project_file(file_path, must_exist=code is None)
     daemon = get_daemon()
 
     # Read content if not provided
     if code is None:
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                code = f.read()
-        except (IOError, OSError) as e:
-            raise PrettierConfigError(f"Failed to read file {file_path}: {e}")
+            code = project_file.path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise PrettierConfigError(
+                f"Failed to read file {project_file.path}: {e}"
+            ) from e
 
     try:
-        result = await daemon.check_formatting(file_path, code)
+        result = await daemon.check_formatting(str(project_file.path), code)
         is_formatted = result.get("isFormatted", False)
 
         return {
@@ -110,9 +116,9 @@ async def check_formatting(
     except Exception as e:
         error_msg = str(e)
         if "Parse error" in error_msg or "Parsing" in error_msg:
-            raise PrettierParseError(f"Failed to parse code: {error_msg}")
+            raise PrettierParseError(f"Failed to parse code: {error_msg}") from e
         elif "Config" in error_msg or "config" in error_msg:
-            raise PrettierConfigError(f"Config error: {error_msg}")
+            raise PrettierConfigError(f"Config error: {error_msg}") from e
         raise
 
 
@@ -120,7 +126,7 @@ async def check_formatting(
 async def get_prettier_config(
     file_path: str,
     ctx: Context | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Get Prettier configuration for a file.
 
     Resolves the Prettier configuration that would be used for the given file,
@@ -137,10 +143,11 @@ async def get_prettier_config(
     Raises:
         PrettierConfigError: If Prettier configuration cannot be found or loaded
     """
+    project_file = resolve_project_file(file_path, must_exist=False)
     daemon = get_daemon()
 
     try:
-        result = await daemon.get_prettier_config(file_path)
+        result = await daemon.get_prettier_config(str(project_file.path))
         config = result.get("config", {})
 
         # Ensure config is returned with proper structure
@@ -156,5 +163,5 @@ async def get_prettier_config(
     except Exception as e:
         error_msg = str(e)
         if "Config" in error_msg or "config" in error_msg:
-            raise PrettierConfigError(f"Config error: {error_msg}")
+            raise PrettierConfigError(f"Config error: {error_msg}") from e
         raise

@@ -9,8 +9,16 @@ from typing import Any
 from fastmcp import Context
 
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
-from ..server import close_file, ensure_vtsls_indexed, mcp, open_file
-from ..utils import apply_pagination, ensure_file_uri, location_sort_key
+from ..server import (
+    close_file,
+    ensure_vtsls_indexed,
+    is_project_file_uri,
+    mcp,
+    open_file,
+    resolve_project_file,
+    sync_open_file_content,
+)
+from ..utils import apply_pagination, location_sort_key
 
 
 @mcp.tool()
@@ -29,9 +37,10 @@ async def definition(
 
     Returns: Location or LocationLink, or None if not found
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -68,9 +77,10 @@ async def type_definition(
 
     Returns: Location or LocationLink, or None if not found
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -107,9 +117,10 @@ async def implementation(
 
     Returns: Location or LocationLink array, or None if not found
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -152,9 +163,10 @@ async def references(
 
     Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -254,9 +266,10 @@ async def document_symbols(
 
     Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -339,9 +352,10 @@ async def symbol_info(
     Returns:
         Dictionary with 'content' (type signature and docs) and 'range' (source range)
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         result = await client.request(
@@ -402,9 +416,10 @@ async def type_info(
         - methods: Paginated list of methods with signatures
         - sourceLocation: Location of the type definition (if available)
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     # Track files we open so we can close them all
     opened_uris = [file_uri]
@@ -457,14 +472,14 @@ async def type_info(
                 source_location = {"uri": target_uri, "range": target_range}
 
                 # Step 3: If local file, get document symbols for type members
-                if target_uri.startswith("file://"):
-                    type_file_path = target_uri.replace("file://", "")
-                    await open_file(client, type_file_path, target_uri)
-                    opened_uris.append(target_uri)
+                if target_uri.startswith("file://") and is_project_file_uri(target_uri):
+                    type_file = resolve_project_file(target_uri)
+                    await open_file(client, type_file.path, type_file.uri)
+                    opened_uris.append(type_file.uri)
 
                     symbols_result = await client.request(
                         "textDocument/documentSymbol",
-                        {"textDocument": {"uri": target_uri}},
+                        {"textDocument": {"uri": type_file.uri}},
                     )
 
                     if symbols_result:
@@ -478,24 +493,18 @@ async def type_info(
                             include_documentation,
                         )
 
-        # Step 4: Get completions to discover methods (dot completion trick)
-        # Request completions as if a dot was typed after the symbol
-        completions = await client.request(
-            "textDocument/completion",
-            {
-                "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character + 1},
-                "context": {"triggerKind": 2, "triggerCharacter": "."},
-            },
+        # Step 4: Get completions after temporarily inserting a dot after the
+        # identifier at the requested position.
+        completion_items = await _get_member_completion_items(
+            client,
+            file_uri,
+            project_file.path.read_text(encoding="utf-8"),
+            line,
+            character,
         )
 
-        if completions:
-            items = (
-                completions.get("items", completions)
-                if isinstance(completions, dict)
-                else completions
-            )
-            for item in items:
+        if completion_items:
+            for item in completion_items:
                 kind = item.get("kind", 0)
                 name = item.get("label", "")
                 detail = item.get("detail", "")
@@ -608,3 +617,79 @@ def _extract_type_members(
             _extract_type_members(
                 children, None, fields, methods, include_documentation
             )
+
+
+def _is_identifier_char(value: str) -> bool:
+    return value.isalnum() or value in "_$"
+
+
+def _member_completion_insertion(
+    content: str, line: int, character: int
+) -> tuple[int, int] | None:
+    """Return (absolute insertion offset, completion character) for dot completion."""
+    line_offsets = [0]
+    for index, char in enumerate(content):
+        if char == "\n":
+            line_offsets.append(index + 1)
+
+    if line < 0 or line >= len(line_offsets):
+        return None
+
+    line_start = line_offsets[line]
+    newline_index = content.find("\n", line_start)
+    line_end = len(content) if newline_index == -1 else newline_index
+    line_text = content[line_start:line_end]
+    char_index = min(max(character, 0), len(line_text))
+
+    if char_index >= len(line_text) or not _is_identifier_char(line_text[char_index]):
+        if char_index > 0 and _is_identifier_char(line_text[char_index - 1]):
+            char_index -= 1
+        else:
+            return None
+
+    identifier_end = char_index
+    while (
+        identifier_end < len(line_text)
+        and _is_identifier_char(line_text[identifier_end])
+    ):
+        identifier_end += 1
+
+    return line_start + identifier_end, identifier_end + 1
+
+
+async def _get_member_completion_items(
+    client: Any,
+    file_uri: str,
+    original_content: str,
+    line: int,
+    character: int,
+) -> list[dict[str, Any]]:
+    insertion = _member_completion_insertion(original_content, line, character)
+    if insertion is None:
+        return []
+
+    insert_offset, completion_character = insertion
+    temporary_content = (
+        original_content[:insert_offset] + "." + original_content[insert_offset:]
+    )
+
+    try:
+        await sync_open_file_content(client, file_uri, temporary_content)
+        completions = await client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line, "character": completion_character},
+                "context": {"triggerKind": 2, "triggerCharacter": "."},
+            },
+        )
+    finally:
+        await sync_open_file_content(client, file_uri, original_content)
+
+    if not completions:
+        return []
+    if isinstance(completions, dict):
+        items = completions.get("items", [])
+    else:
+        items = completions
+    return [item for item in items if isinstance(item, dict)]

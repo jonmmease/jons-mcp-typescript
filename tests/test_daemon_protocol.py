@@ -1,5 +1,6 @@
-import pytest
 import json
+
+import pytest
 
 
 class TestDaemonProtocol:
@@ -69,7 +70,7 @@ class TestDaemonProtocol:
             assert code < 0
             # Verify retryable flag makes sense
             if error_type in ["InternalError", "Timeout"]:
-                assert retryable == True
+                assert retryable
 
     def test_ready_signal_format(self):
         """Test ready signal format."""

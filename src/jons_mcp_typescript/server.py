@@ -5,17 +5,19 @@ import hashlib
 import logging
 import signal
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastmcp import FastMCP
 
-from .constants import DIAGNOSTICS_TIMEOUT, REQUEST_TIMEOUT
+from .constants import DIAGNOSTICS_TIMEOUT
 from .daemon_client import FormatterLinterDaemon
 from .exceptions import VtslsNotInitializedError
-from .lsp_client import ProcessWatchdog, VtslsClient
+from .lsp_client import VtslsClient
+from .utils import resolve_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,14 @@ class DocumentState:
     version: int
     content_hash: str
     is_open: bool = False
+
+
+@dataclass(frozen=True)
+class ProjectFile:
+    """A validated project file path and its canonical URI."""
+
+    path: Path
+    uri: str
 
 
 def compute_content_hash(content: str) -> str:
@@ -51,14 +61,32 @@ def compute_content_hash(content: str) -> str:
 
 # Global state
 vtsls: VtslsClient | None = None
-vtsls_watchdog: ProcessWatchdog | None = None
 daemon: FormatterLinterDaemon | None = None
-daemon_watchdog: ProcessWatchdog | None = None
 current_diagnostics: dict[str, list] = {}  # uri -> diagnostics
 document_states: dict[str, DocumentState] = {}  # uri -> document state for version tracking
 pending_diagnostics_events: dict[str, asyncio.Event] = {}  # uri -> event for waiting
 initialization_complete = False
 _project_root: Path | None = None
+
+
+def get_project_root() -> Path:
+    """Return the configured project root as a resolved path."""
+    return (_project_root or Path.cwd()).expanduser().resolve(strict=True)
+
+
+def resolve_project_file(file_path: str, *, must_exist: bool = True) -> ProjectFile:
+    """Resolve a user-supplied file path within the configured project root."""
+    path = resolve_project_path(file_path, get_project_root(), must_exist=must_exist)
+    return ProjectFile(path=path, uri=path.as_uri())
+
+
+def is_project_file_uri(file_uri: str) -> bool:
+    """Return whether a file URI resolves inside the configured project root."""
+    try:
+        resolve_project_path(file_uri, get_project_root(), must_exist=False)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def handle_diagnostics(params: dict[str, Any]) -> None:
@@ -164,7 +192,7 @@ def get_daemon() -> FormatterLinterDaemon:
     return daemon
 
 
-async def open_file(client: VtslsClient, file_path: str, file_uri: str) -> bool:
+async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -> bool:
     """Open or sync a file in vtsls with current disk content.
 
     Uses version tracking to properly notify vtsls of changes:
@@ -182,19 +210,19 @@ async def open_file(client: VtslsClient, file_path: str, file_uri: str) -> bool:
         True if file was synced successfully, False on error.
     """
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        path = Path(file_path)
+        content = path.read_text(encoding="utf-8")
 
         content_hash = compute_content_hash(content)
         state = document_states.get(file_uri)
 
         # Determine language ID
         lang_id = "typescript"
-        if file_path.endswith(".tsx"):
+        if path.suffix == ".tsx":
             lang_id = "typescriptreact"
-        elif file_path.endswith(".js"):
+        elif path.suffix == ".js":
             lang_id = "javascript"
-        elif file_path.endswith(".jsx"):
+        elif path.suffix == ".jsx":
             lang_id = "javascriptreact"
 
         if state is None:
@@ -266,6 +294,27 @@ async def open_file(client: VtslsClient, file_path: str, file_uri: str) -> bool:
         return False
 
 
+async def sync_open_file_content(
+    client: VtslsClient, file_uri: str, content: str
+) -> int:
+    """Sync replacement content for an open document and return its version."""
+    state = document_states.get(file_uri)
+    version = (state.version + 1) if state else 1
+    await client.notify(
+        "textDocument/didChange",
+        {
+            "textDocument": {"uri": file_uri, "version": version},
+            "contentChanges": [{"text": content}],
+        },
+    )
+    document_states[file_uri] = DocumentState(
+        version=version,
+        content_hash=compute_content_hash(content),
+        is_open=True,
+    )
+    return version
+
+
 async def close_file(client: VtslsClient, file_uri: str) -> None:
     """Close a file in vtsls.
 
@@ -311,52 +360,54 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     Yields:
         None during server operation.
     """
-    global vtsls, daemon, vtsls_watchdog, daemon_watchdog, initialization_complete
+    global vtsls, daemon, initialization_complete
 
     # Get project root from global state or use current directory
-    project_root = _project_root or Path.cwd()
+    project_root = get_project_root()
     logger.info(f"Starting MCP server for project: {project_root}")
 
-    # Initialize vtsls client
-    vtsls = VtslsClient(project_root)
+    try:
+        # Initialize vtsls client
+        vtsls = VtslsClient(project_root)
 
-    # Register diagnostics notification handler
-    vtsls.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
+        # Register diagnostics notification handler
+        vtsls.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
 
-    # Start the vtsls client
-    await vtsls.start()
+        # Start the vtsls client
+        await vtsls.start()
 
-    # Start daemon for formatting and linting
-    daemon = FormatterLinterDaemon.create(project_root)
-    await daemon.start()
-    logger.info("Formatter/Linter daemon started")
+        # Start daemon for formatting and linting
+        daemon = FormatterLinterDaemon.create(project_root)
+        await daemon.start()
+        logger.info("Formatter/Linter daemon started")
 
-    # Wait for initial analysis to complete
-    # This gives vtsls time to scan the project and generate initial diagnostics
-    logger.info("Waiting for initial TypeScript analysis...")
-    await asyncio.sleep(2.0)
+        # Wait for initial analysis to complete
+        # This gives vtsls time to scan the project and generate initial diagnostics
+        logger.info("Waiting for initial TypeScript analysis...")
+        await asyncio.sleep(2.0)
 
-    initialization_complete = True
-    logger.info("MCP server initialization complete")
+        initialization_complete = True
+        logger.info("MCP server initialization complete")
 
-    # Yield control to the server
-    yield
+        # Yield control to the server
+        yield
 
-    # Shutdown
-    logger.info("Shutting down MCP server...")
-    initialization_complete = False
+    finally:
+        # Shutdown
+        logger.info("Shutting down MCP server...")
+        initialization_complete = False
 
-    # Shutdown daemon first
-    if daemon:
-        await daemon.shutdown()
-        daemon = None
+        # Shutdown daemon first
+        if daemon:
+            await daemon.shutdown()
+            daemon = None
 
-    # Then shutdown vtsls
-    if vtsls:
-        await vtsls.shutdown()
-        vtsls = None
+        # Then shutdown vtsls
+        if vtsls:
+            await vtsls.shutdown()
+            vtsls = None
 
-    logger.info("MCP server shutdown complete")
+        logger.info("MCP server shutdown complete")
 
 
 # Server instructions for MCP clients

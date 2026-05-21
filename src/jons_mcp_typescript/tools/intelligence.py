@@ -1,9 +1,8 @@
 """Intelligence tools for TypeScript development - diagnostics and rename."""
 
-import asyncio
-
 from fastmcp import Context
 
+from .. import server as server_state
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
 from ..server import (
     clear_diagnostics_for_uri,
@@ -11,14 +10,15 @@ from ..server import (
     current_diagnostics,
     document_states,
     ensure_vtsls_indexed,
+    get_daemon,
     mcp,
     open_file,
     pending_diagnostics_events,
     register_diagnostics_event,
-    vtsls,
+    resolve_project_file,
     wait_for_diagnostics,
 )
-from ..utils import apply_pagination, diagnostic_sort_key, ensure_file_uri
+from ..utils import apply_pagination, diagnostic_sort_key
 
 
 @mcp.tool()
@@ -40,14 +40,14 @@ async def diagnostics(
 
     Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
     """
-    client = await ensure_vtsls_indexed(file_path)
-
     all_diagnostics = []
 
     if scope == "file":
         if not file_path:
             return {"error": "file_path required when scope='file'"}
-        file_uri = ensure_file_uri(file_path)
+        project_file = resolve_project_file(file_path)
+        client = await ensure_vtsls_indexed(file_path)
+        file_uri = project_file.uri
 
         try:
             # Clear cached diagnostics and register event BEFORE opening file
@@ -55,7 +55,7 @@ async def diagnostics(
             register_diagnostics_event(file_uri)
 
             # Open/sync file with fresh content from disk
-            await open_file(client, file_path, file_uri)
+            await open_file(client, project_file.path, file_uri)
 
             # Wait for diagnostics to arrive via event (with timeout)
             all_diagnostics = await wait_for_diagnostics(file_uri)
@@ -100,9 +100,10 @@ async def rename(
 
     Returns: WorkspaceEdit with all changes needed
     """
+    project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-    await open_file(client, file_path, file_uri)
+    file_uri = project_file.uri
+    await open_file(client, project_file.path, file_uri)
 
     try:
         # Optional: Validate rename is possible
@@ -133,7 +134,7 @@ async def rename(
         if not result:
             return {"error": "Rename failed", "changes": {}}
 
-        return result  # Returns WorkspaceEdit structure
+        return result if isinstance(result, dict) else {"error": "Rename failed"}
     finally:
         await close_file(client, file_uri)
 
@@ -147,7 +148,8 @@ async def restart_server(ctx: Context | None = None) -> str:
 
     Returns: Status message
     """
-    if not vtsls:
+    client = server_state.vtsls
+    if not client:
         return "Error: TypeScript server not running"
 
     # Clear all cached state
@@ -155,7 +157,9 @@ async def restart_server(ctx: Context | None = None) -> str:
     document_states.clear()
     pending_diagnostics_events.clear()
 
-    # Restart the server
-    await vtsls.restart()
+    # Restart the language server and daemon.
+    await client.restart()
+    daemon = get_daemon()
+    await daemon.restart()
 
-    return "TypeScript language server restarted successfully"
+    return "TypeScript language server and formatter/linter daemon restarted successfully"

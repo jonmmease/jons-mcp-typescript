@@ -9,6 +9,7 @@ const ERROR_CODES = {
   ParseError: -32002,
   PluginMissing: -32003,
   Timeout: -32004,
+  DependencyMissing: -32005,
   JSONParseError: -32700,
 };
 
@@ -44,7 +45,7 @@ function getESLintManager(projectRoot) {
 class PrettierManager {
   static async format(params) {
     const { projectRoot, filepath, content } = params || {};
-    if (!projectRoot || !filepath || !content) {
+    if (!projectRoot || !filepath || content === undefined || content === null) {
       throw new Error('Missing required params: projectRoot, filepath, content');
     }
     const manager = getPrettierManager(projectRoot);
@@ -53,7 +54,7 @@ class PrettierManager {
 
   static async check(params) {
     const { projectRoot, filepath, content } = params || {};
-    if (!projectRoot || !filepath || !content) {
+    if (!projectRoot || !filepath || content === undefined || content === null) {
       throw new Error('Missing required params: projectRoot, filepath, content');
     }
     const manager = getPrettierManager(projectRoot);
@@ -98,7 +99,7 @@ async function handleRequest(request) {
   const { id, version, method, params } = request;
 
   // Validate request structure
-  if (!id || !method) {
+  if (id === undefined || id === null || !method) {
     return formatError(undefined, 'JSONParseError', 'Missing required fields: id, method');
   }
 
@@ -112,7 +113,7 @@ async function handleRequest(request) {
     switch (method) {
       case 'format': {
         const { projectRoot, filepath, content } = params || {};
-        if (!projectRoot || !filepath || !content) {
+        if (!projectRoot || !filepath || content === undefined || content === null) {
           return formatError(id, 'InternalError', 'Missing required params: projectRoot, filepath, content');
         }
         result = await PrettierManager.format(params);
@@ -121,7 +122,7 @@ async function handleRequest(request) {
 
       case 'check': {
         const { projectRoot, filepath, content } = params || {};
-        if (!projectRoot || !filepath || !content) {
+        if (!projectRoot || !filepath || content === undefined || content === null) {
           return formatError(id, 'InternalError', 'Missing required params: projectRoot, filepath, content');
         }
         result = await PrettierManager.check(params);
@@ -130,7 +131,7 @@ async function handleRequest(request) {
 
       case 'lint': {
         const { projectRoot, filepath, content, fix } = params || {};
-        if (!projectRoot || !filepath || !content) {
+        if (!projectRoot || !filepath || content === undefined || content === null) {
           return formatError(id, 'InternalError', 'Missing required params: projectRoot, filepath, content');
         }
         const manager = getESLintManager(projectRoot);
@@ -169,7 +170,14 @@ async function handleRequest(request) {
     let errorType = 'InternalError';
     let errorData = {};
 
-    if (error.message.includes('Config')) {
+    if (error.name === 'DependencyMissing') {
+      errorType = 'DependencyMissing';
+      errorData = {
+        packageName: error.packageName,
+        projectRoot: error.projectRoot,
+        installCommand: error.installCommand,
+      };
+    } else if (error.message.includes('Config')) {
       errorType = 'ConfigNotFound';
       errorData.path = error.path || '';
     } else if (error.message.includes('Parse')) {

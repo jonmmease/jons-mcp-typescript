@@ -5,7 +5,8 @@ from typing import Any
 from fastmcp import Context
 
 from ..exceptions import ESLintConfigError, ESLintPluginError
-from ..server import get_daemon, mcp
+from ..server import get_daemon, mcp, resolve_project_file
+from ..utils import count_eslint_messages
 
 
 @mcp.tool()
@@ -37,22 +38,24 @@ async def lint_code(
         ESLintConfigError: If ESLint configuration cannot be found or loaded
         ESLintPluginError: If ESLint plugin cannot be loaded
     """
+    project_file = resolve_project_file(file_path, must_exist=code is None)
     daemon = get_daemon()
 
     # Read content if not provided
     if code is None:
-        with open(file_path, "r", encoding="utf-8") as f:
-            code = f.read()
+        code = project_file.path.read_text(encoding="utf-8")
 
     try:
-        result = await daemon.lint(file_path, code, fix)
+        result = await daemon.lint(str(project_file.path), code, fix)
 
         # Extract issues from messages
         messages = result.get("messages", [])
 
         # Count errors and warnings
-        error_count = sum(1 for msg in messages if msg.get("severity") == 2)
-        warning_count = sum(1 for msg in messages if msg.get("severity") == 1)
+        error_count = int(result.get("errorCount", 0))
+        warning_count = int(result.get("warningCount", 0))
+        if error_count == 0 and warning_count == 0:
+            error_count, warning_count = count_eslint_messages(messages)
 
         return {
             "issues": messages,
@@ -88,11 +91,13 @@ async def get_eslint_config(
         ESLintConfigError: If ESLint configuration cannot be found or loaded
         ESLintPluginError: If ESLint plugin cannot be loaded
     """
+    project_file = resolve_project_file(file_path, must_exist=False)
     daemon = get_daemon()
 
     try:
-        result = await daemon.get_eslint_config(file_path)
-        return result.get("config", {})
+        result = await daemon.get_eslint_config(str(project_file.path))
+        config = result.get("config", {})
+        return config if isinstance(config, dict) else {}
     except Exception as e:
         error_msg = str(e)
         if "Plugin" in error_msg or "plugin" in error_msg:

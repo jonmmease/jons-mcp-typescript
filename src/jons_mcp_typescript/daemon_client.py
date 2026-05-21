@@ -6,7 +6,7 @@ import logging
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .constants import FORMAT_TIMEOUT, LINT_TIMEOUT
 from .exceptions import DaemonError, DaemonTimeoutError
@@ -57,7 +57,7 @@ class FormatterLinterDaemon:
         daemon_script = Path(__file__).parent / "daemon" / "index.js"
         return cls(daemon_script, project_root)
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the daemon process and wait for ready signal.
 
         Raises:
@@ -66,6 +66,8 @@ class FormatterLinterDaemon:
         """
         if self._process:
             raise RuntimeError("Daemon already started")
+        if not self.daemon_script.exists():
+            raise RuntimeError(f"Daemon script not found: {self.daemon_script}")
 
         # Store event loop for thread-to-async communication
         self._loop = asyncio.get_running_loop()
@@ -75,16 +77,16 @@ class FormatterLinterDaemon:
 
         try:
             self._process = subprocess.Popen(
-                ['node', str(self.daemon_script)],
+                ["node", str(self.daemon_script)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                cwd=str(self.project_root)
+                cwd=str(self.project_root),
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to start daemon: {e}")
+            raise RuntimeError(f"Failed to start daemon: {e}") from e
 
         # Reset shutdown flag
         self._shutting_down = False
@@ -100,27 +102,29 @@ class FormatterLinterDaemon:
         except asyncio.TimeoutError:
             # Clean up on timeout
             await self.shutdown()
-            raise DaemonTimeoutError("Daemon failed to send ready signal within 10s")
+            raise DaemonTimeoutError(
+                "Daemon failed to send ready signal within 10s"
+            ) from None
 
-    def _start_reader_thread(self):
+    def _start_reader_thread(self) -> None:
         """Start thread to read JSON Lines from daemon stdout."""
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
             daemon=True,
-            name="daemon-reader"
+            name="daemon-reader",
         )
         self._reader_thread.start()
 
-    def _start_stderr_thread(self):
+    def _start_stderr_thread(self) -> None:
         """Start thread to drain stderr and prevent deadlock."""
         self._stderr_thread = threading.Thread(
             target=self._stderr_loop,
             daemon=True,
-            name="daemon-stderr"
+            name="daemon-stderr",
         )
         self._stderr_thread.start()
 
-    def _reader_loop(self):
+    def _reader_loop(self) -> None:
         """Read JSON Lines from stdout in a thread."""
         logger.debug("Reader thread started")
 
@@ -151,7 +155,7 @@ class FormatterLinterDaemon:
                     logger.error(f"Error in reader thread: {e}")
                 break
 
-    def _stderr_loop(self):
+    def _stderr_loop(self) -> None:
         """Read stderr in a thread to prevent deadlock."""
         while self._process and self._process.stderr and not self._shutting_down:
             try:
@@ -168,7 +172,7 @@ class FormatterLinterDaemon:
             except Exception:
                 break
 
-    async def _handle_message(self, message: dict[str, Any]):
+    async def _handle_message(self, message: dict[str, Any]) -> None:
         """Handle incoming message from daemon.
 
         Args:
@@ -246,25 +250,25 @@ class FormatterLinterDaemon:
         # Write JSON line to stdin
         try:
             with self._writer_lock:
-                json_line = json.dumps(request) + '\n'
+                json_line = json.dumps(request) + "\n"
                 self._process.stdin.write(json_line)
                 self._process.stdin.flush()
 
             logger.debug(f"Sent request {method} (id={request_id})")
         except Exception as e:
             del self._pending_requests[request_id]
-            raise RuntimeError(f"Failed to send request: {e}")
+            raise RuntimeError(f"Failed to send request: {e}") from e
 
         # Wait for response with timeout
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
             logger.debug(f"Got response for {method} (id={request_id})")
-            return result
+            return cast(dict[str, Any], result)
         except asyncio.TimeoutError:
             self._pending_requests.pop(request_id, None)
             raise DaemonTimeoutError(
                 f"Request {method} timed out after {timeout}s"
-            )
+            ) from None
 
     async def format(self, filepath: str, content: str) -> dict[str, Any]:
         """Format code using Prettier.
@@ -287,9 +291,9 @@ class FormatterLinterDaemon:
             {
                 "filepath": filepath,
                 "content": content,
-                "projectRoot": str(self.project_root)
+                "projectRoot": str(self.project_root),
             },
-            timeout=FORMAT_TIMEOUT
+            timeout=FORMAT_TIMEOUT,
         )
 
     async def check_formatting(self, filepath: str, content: str) -> dict[str, Any]:
@@ -313,9 +317,9 @@ class FormatterLinterDaemon:
             {
                 "filepath": filepath,
                 "content": content,
-                "projectRoot": str(self.project_root)
+                "projectRoot": str(self.project_root),
             },
-            timeout=FORMAT_TIMEOUT
+            timeout=FORMAT_TIMEOUT,
         )
 
     async def lint(
@@ -347,9 +351,9 @@ class FormatterLinterDaemon:
                 "filepath": filepath,
                 "content": content,
                 "projectRoot": str(self.project_root),
-                "fix": fix
+                "fix": fix,
             },
-            timeout=LINT_TIMEOUT
+            timeout=LINT_TIMEOUT,
         )
 
     async def get_prettier_config(self, filepath: str) -> dict[str, Any]:
@@ -372,9 +376,9 @@ class FormatterLinterDaemon:
             {
                 "filepath": filepath,
                 "tool": "prettier",
-                "projectRoot": str(self.project_root)
+                "projectRoot": str(self.project_root),
             },
-            timeout=10.0
+            timeout=10.0,
         )
 
     async def get_eslint_config(self, filepath: str) -> dict[str, Any]:
@@ -397,12 +401,12 @@ class FormatterLinterDaemon:
             {
                 "filepath": filepath,
                 "tool": "eslint",
-                "projectRoot": str(self.project_root)
+                "projectRoot": str(self.project_root),
             },
-            timeout=10.0
+            timeout=10.0,
         )
 
-    async def restart(self):
+    async def restart(self) -> None:
         """Restart the daemon process.
 
         Useful for recovering from errors or applying configuration changes.
@@ -426,7 +430,7 @@ class FormatterLinterDaemon:
 
         logger.info("Daemon restarted successfully")
 
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         """Shutdown the daemon process gracefully.
 
         Cancels all pending requests and terminates the subprocess.
@@ -438,7 +442,7 @@ class FormatterLinterDaemon:
         self._shutting_down = True
 
         # Cancel all pending requests
-        for request_id, future in list(self._pending_requests.items()):
+        for _request_id, future in list(self._pending_requests.items()):
             if not future.done():
                 future.set_exception(
                     DaemonError("Daemon shutting down", -32000)
@@ -467,7 +471,7 @@ class FormatterLinterDaemon:
                     asyncio.get_running_loop().run_in_executor(
                         None, self._process.wait
                     ),
-                    timeout=5
+                    timeout=5,
                 )
             except asyncio.TimeoutError:
                 logger.debug("Process didn't terminate, killing...")

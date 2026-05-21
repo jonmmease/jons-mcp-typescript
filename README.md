@@ -19,6 +19,11 @@ MCP server providing TypeScript development capabilities via vtsls, Prettier, an
    ```bash
    npm install -g @vtsls/language-server
    ```
+4. **Project-local Prettier and ESLint** in the TypeScript project you run the server against:
+   ```bash
+   cd /path/to/typescript/project
+   npm install -D prettier eslint
+   ```
 
 ### Install the Package
 
@@ -30,16 +35,9 @@ uv pip install jons-mcp-typescript
 pip install jons-mcp-typescript
 ```
 
-### Install Daemon Dependencies
-
-The daemon requires Prettier and ESLint. Install them in the daemon directory:
-
-```bash
-cd src/jons_mcp_typescript/daemon
-npm install
-```
-
-Or the daemon will attempt to use versions from your project's `node_modules`.
+The Python package includes the small Node daemon source. The daemon intentionally
+uses Prettier and ESLint from your target project's `node_modules` so formatting
+and linting match that project.
 
 ## Usage
 
@@ -63,8 +61,8 @@ git clone https://github.com/jonmmease/jons-mcp-typescript
 cd jons-mcp-typescript
 uv sync --dev
 
-# Install daemon dependencies
-cd src/jons_mcp_typescript/daemon && npm install && cd ../../..
+# Install TypeScript project formatting/linting dependencies
+cd /path/to/your/typescript/project && npm install -D prettier eslint
 
 # Run against current directory
 uv run jons-mcp-typescript
@@ -316,7 +314,7 @@ uv run pytest tests/test_utils.py -v
 Integration tests require:
 - Node.js installed
 - vtsls installed globally
-- Prettier and ESLint in daemon node_modules
+- Prettier and ESLint available to the temporary test project
 
 Tests will skip gracefully if dependencies are missing.
 

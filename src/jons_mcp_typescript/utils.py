@@ -2,29 +2,105 @@
 
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from .constants import DEFAULT_LIMIT, DEFAULT_OFFSET
+from .exceptions import PathOutsideProjectError
 
 T = TypeVar("T")
 
 
-def ensure_file_uri(file_path: str) -> str:
-    """Convert file path to proper file URI.
+def path_from_file_uri(uri: str) -> Path:
+    """Convert a file:// URI to a local path.
 
     Args:
-        file_path: Path to the file (absolute, relative, or already a URI)
+        uri: A file URI.
 
     Returns:
-        Properly formatted file:// URI
+        Local filesystem path.
+
+    Raises:
+        ValueError: If the URI is not a local file URI.
     """
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        raise ValueError(f"Unsupported URI scheme for file path: {parsed.scheme}")
+    if parsed.netloc not in ("", "localhost"):
+        raise ValueError(f"Unsupported non-local file URI: {uri}")
+    return Path(url2pathname(parsed.path))
+
+
+def resolve_project_path(
+    file_path: str,
+    project_root: Path,
+    *,
+    must_exist: bool = True,
+) -> Path:
+    """Resolve and validate a user-supplied path inside the project root.
+
+    Relative paths are resolved against project_root. Existing symlinks are
+    resolved before containment is checked, so symlink escapes are rejected.
+
+    Args:
+        file_path: Path string or file:// URI.
+        project_root: Configured TypeScript project root.
+        must_exist: Whether the final path must already exist.
+
+    Returns:
+        Canonical absolute path.
+
+    Raises:
+        FileNotFoundError: If must_exist is True and the path does not exist.
+        PathOutsideProjectError: If the path escapes project_root.
+        ValueError: If a URI cannot be converted to a local file path.
+    """
+    root = project_root.expanduser().resolve(strict=True)
     if file_path.startswith("file://"):
-        return file_path
+        path = path_from_file_uri(file_path)
+    else:
+        path = Path(file_path)
+    if not path.is_absolute():
+        path = root / path
+
+    if must_exist:
+        resolved = path.resolve(strict=True)
+    else:
+        resolved = path.resolve(strict=False)
+
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PathOutsideProjectError(
+            f"Path is outside project root: {resolved} (root: {root})"
+        ) from exc
+
+    return resolved
+
+
+def ensure_file_uri(file_path: str, project_root: Path | None = None) -> str:
+    """Convert a file path to a proper file URI.
+
+    Args:
+        file_path: Path to the file (absolute, relative, or already a URI).
+        project_root: Optional project root for relative path resolution and
+            containment validation.
+
+    Returns:
+        Properly formatted file:// URI.
+    """
+    if project_root is not None:
+        return resolve_project_path(
+            file_path, project_root, must_exist=False
+        ).as_uri()
+
+    if file_path.startswith("file://"):
+        return path_from_file_uri(file_path).resolve(strict=False).as_uri()
 
     path = Path(file_path)
     if not path.is_absolute():
         path = Path.cwd() / path
-
-    return f"file://{path.absolute()}"
+    return path.resolve(strict=False).as_uri()
 
 
 def apply_pagination(
@@ -136,6 +212,19 @@ def diagnostic_sort_key(item: dict[str, Any]) -> tuple[int, str, int, int]:
     line = start.get("line", 0)
     char = start.get("character", 0)
     return (severity, uri, line, char)
+
+
+def count_eslint_messages(messages: list[dict[str, Any]]) -> tuple[int, int]:
+    """Return (errors, warnings) for normalized ESLint messages."""
+    error_count = 0
+    warning_count = 0
+    for message in messages:
+        severity = message.get("severity")
+        if severity in ("error", 2):
+            error_count += 1
+        elif severity in ("warning", 1):
+            warning_count += 1
+    return error_count, warning_count
 
 
 def find_package_root(file_path: str) -> str:

@@ -29,6 +29,9 @@ export class ESLintManager {
       const { ESLint } = resolvePackage('eslint', projectRoot);
       this.ESLint = ESLint;
     } catch (error) {
+      if (error.name === 'DependencyMissing') {
+        throw error;
+      }
       throw new Error(`Failed to initialize ESLint: ${error.message}`);
     }
   }

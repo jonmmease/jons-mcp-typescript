@@ -461,7 +461,6 @@ class TestDaemonLifecycle:
             # Mock start and shutdown
             with patch.object(daemon, "start", new_callable=AsyncMock):
                 with patch.object(daemon, "shutdown", new_callable=AsyncMock):
-                    initial_request_id = daemon._request_id
                     await daemon.restart()
 
                     # Verify state was reset

@@ -6,8 +6,8 @@ including vtsls, Prettier, and ESLint integration.
 Tests require:
 - Node.js installed
 - vtsls installed (npm install -g @vtsls/language-server)
-- Prettier installed (will use bundled fallback if not)
-- ESLint installed (will use bundled fallback if not)
+- Prettier installed in the target project
+- ESLint installed in the target project
 
 Tests are marked with appropriate skip conditions if dependencies are missing.
 """
@@ -18,15 +18,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import AsyncGenerator, Generator
 
 import pytest
 
 from jons_mcp_typescript.daemon_client import FormatterLinterDaemon
 from jons_mcp_typescript.exceptions import (
     DaemonError,
-    DaemonTimeoutError,
     VtslsNotFoundError,
 )
 from jons_mcp_typescript.lsp_client import VtslsClient
@@ -36,13 +35,11 @@ from jons_mcp_typescript.server import (
     compute_content_hash,
     current_diagnostics,
     document_states,
-    DocumentState,
     open_file,
     pending_diagnostics_events,
     register_diagnostics_event,
     wait_for_diagnostics,
 )
-
 
 # =============================================================================
 # Helpers to check for dependencies
@@ -120,6 +117,17 @@ NODE_AVAILABLE = is_node_available()
 VTSLS_AVAILABLE = is_vtsls_available()
 PRETTIER_AVAILABLE = is_prettier_available()
 ESLINT_AVAILABLE = is_eslint_available()
+
+
+DAEMON_DIR = Path(__file__).parent.parent / "src" / "jons_mcp_typescript" / "daemon"
+
+
+def link_project_node_modules(project_root: Path) -> None:
+    """Give a temp project local Node deps by linking the daemon dev install."""
+    source = DAEMON_DIR / "node_modules"
+    target = project_root / "node_modules"
+    if source.exists() and not target.exists():
+        target.symlink_to(source, target_is_directory=True)
 
 
 # =============================================================================
@@ -240,6 +248,7 @@ def project_with_prettier_config() -> Generator[Path, None, None]:
 function hello(     name:string){return "Hello, "+name}
 '''
         (src_dir / "index.ts").write_text(index_ts)
+        link_project_node_modules(project_root)
 
         yield project_root
 
@@ -291,6 +300,7 @@ function greet(name: string): void {
 greet("World");
 '''
         (src_dir / "index.ts").write_text(index_ts)
+        link_project_node_modules(project_root)
 
         yield project_root
 
@@ -358,6 +368,7 @@ function greet(name:string){return "Hello, "+name}
 greet("World")
 '''
         (src_dir / "index.ts").write_text(index_ts)
+        link_project_node_modules(project_root)
 
         yield project_root
 
@@ -392,6 +403,25 @@ class TestDaemonIntegration:
 
             result = await daemon.send_request("ping", {})
             assert result == {"ok": True}
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not PRETTIER_AVAILABLE, reason="Prettier not installed in daemon")
+    async def test_daemon_accepts_empty_format_content(
+        self, project_with_prettier_config: Path
+    ):
+        """Test empty content is valid request content."""
+        daemon = FormatterLinterDaemon.create(project_with_prettier_config)
+
+        try:
+            await daemon.start()
+
+            file_path = str(project_with_prettier_config / "src" / "index.ts")
+            result = await daemon.format(file_path, "")
+
+            assert result["formatted"] == ""
+
         finally:
             await daemon.shutdown()
 
@@ -460,6 +490,25 @@ class TestDaemonIntegration:
             result = await daemon.get_prettier_config(file_path)
 
             assert "config" in result or "configPath" in result
+
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not ESLINT_AVAILABLE, reason="ESLint not installed in daemon")
+    async def test_daemon_accepts_empty_lint_content(
+        self, project_with_eslint_config: Path
+    ):
+        """Test empty content is valid lint request content."""
+        daemon = FormatterLinterDaemon.create(project_with_eslint_config)
+
+        try:
+            await daemon.start()
+
+            file_path = str(project_with_eslint_config / "src" / "index.ts")
+            result = await daemon.lint(file_path, "", fix=False)
+
+            assert result["messages"] == []
 
         finally:
             await daemon.shutdown()
@@ -881,6 +930,24 @@ class TestErrorScenarios:
             await daemon.shutdown()
 
     @pytest.mark.asyncio
+    async def test_daemon_missing_project_dependency(self, simple_ts_project: Path):
+        """Test missing project-local Prettier reports an actionable error."""
+        daemon = FormatterLinterDaemon.create(simple_ts_project)
+
+        try:
+            await daemon.start()
+
+            file_path = str(simple_ts_project / "src" / "index.ts")
+            with pytest.raises(DaemonError) as exc_info:
+                await daemon.format(file_path, "")
+
+            assert exc_info.value.code == -32005
+            assert "npm install -D prettier" in str(exc_info.value)
+
+        finally:
+            await daemon.shutdown()
+
+    @pytest.mark.asyncio
     async def test_vtsls_not_found(self, simple_ts_project: Path):
         """Test handling when vtsls is not found."""
         # Save original environment
@@ -893,7 +960,7 @@ class TestErrorScenarios:
             os.environ["PATH"] = "/nonexistent"
 
             with pytest.raises(VtslsNotFoundError):
-                client = VtslsClient(simple_ts_project)
+                VtslsClient(simple_ts_project)
                 # _find_vtsls is called in __init__
 
         finally:
@@ -975,8 +1042,7 @@ export {};
 '''
 
             # Initial lint
-            lint_result = await daemon.lint(file_path, code, fix=False)
-            initial_messages = lint_result.get("messages", [])
+            await daemon.lint(file_path, code, fix=False)
 
             # Lint with fix
             fix_result = await daemon.lint(file_path, code, fix=True)
@@ -1027,12 +1093,6 @@ export {};
             assert file_uri in diagnostics_received
             diags = diagnostics_received[file_uri]
 
-            # Should have at least one diagnostic for the type error
-            # age: "thirty" - string not assignable to number
-            type_errors = [
-                d for d in diags if "not assignable" in d.get("message", "").lower()
-                or "type" in d.get("message", "").lower()
-            ]
             # Note: may vary based on vtsls version
             # Just verify we got some diagnostics
             assert isinstance(diags, list)
@@ -1313,7 +1373,7 @@ class TestStaleDiagnosticsFix:
             file_uri = f"file://{file_path}"
 
             # Make multiple rapid calls
-            for i in range(3):
+            for _i in range(3):
                 clear_diagnostics_for_uri(file_uri)
                 register_diagnostics_event(file_uri)
                 await open_file(client, str(file_path), file_uri)

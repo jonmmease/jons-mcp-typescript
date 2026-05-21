@@ -59,6 +59,11 @@ class DaemonTimeoutError(Exception):
     pass
 
 
+class PathOutsideProjectError(ValueError):
+    """Exception raised when a requested file is outside the project root."""
+    pass
+
+
 class PrettierConfigError(Exception):
     """Exception raised when Prettier configuration cannot be found or loaded."""
     pass

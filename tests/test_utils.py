@@ -2,16 +2,17 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
+from jons_mcp_typescript.exceptions import PathOutsideProjectError
 from jons_mcp_typescript.utils import (
     apply_pagination,
     diagnostic_sort_key,
     ensure_file_uri,
     find_package_root,
     location_sort_key,
+    resolve_project_path,
     symbol_sort_key,
     workspace_symbol_sort_key,
 )
@@ -47,13 +48,73 @@ class TestEnsureFileUri:
         """Test path with spaces is properly converted."""
         result = ensure_file_uri("/path/to/my file.ts")
         assert result.startswith("file://")
-        assert "my file.ts" in result
+        assert "my%20file.ts" in result
 
     def test_path_with_special_characters(self):
         """Test path with special characters."""
         result = ensure_file_uri("/path/to/my-file_test.ts")
         assert result.startswith("file://")
         assert "my-file_test.ts" in result
+
+
+class TestResolveProjectPath:
+    """Test project-root scoped path resolution."""
+
+    def test_relative_path_resolves_against_project_root(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as project_tmp:
+            with tempfile.TemporaryDirectory() as cwd_tmp:
+                project_root = Path(project_tmp)
+                source_file = project_root / "src" / "main.ts"
+                source_file.parent.mkdir()
+                source_file.write_text("export const value = 1;")
+                monkeypatch.chdir(cwd_tmp)
+
+                result = resolve_project_path("src/main.ts", project_root)
+
+                assert result == source_file.resolve()
+
+    def test_file_uri_inside_project_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            source_file = project_root / "main.ts"
+            source_file.write_text("export {};")
+
+            result = resolve_project_path(source_file.as_uri(), project_root)
+
+            assert result == source_file.resolve()
+
+    def test_absolute_outside_path_is_rejected(self):
+        with tempfile.TemporaryDirectory() as project_tmp:
+            with tempfile.TemporaryDirectory() as outside_tmp:
+                outside_file = Path(outside_tmp) / "outside.ts"
+                outside_file.write_text("export {};")
+
+                with pytest.raises(PathOutsideProjectError):
+                    resolve_project_path(str(outside_file), Path(project_tmp))
+
+    def test_parent_escape_is_rejected(self):
+        with tempfile.TemporaryDirectory() as project_tmp:
+            project_root = Path(project_tmp)
+            outside_file = project_root.parent / "outside.ts"
+            outside_file.write_text("export {};")
+            try:
+                with pytest.raises(PathOutsideProjectError):
+                    resolve_project_path("../outside.ts", project_root)
+            finally:
+                outside_file.unlink()
+
+    def test_symlink_escape_is_rejected(self):
+        with tempfile.TemporaryDirectory() as project_tmp:
+            with tempfile.TemporaryDirectory() as outside_tmp:
+                project_root = Path(project_tmp)
+                outside_dir = Path(outside_tmp)
+                outside_file = outside_dir / "outside.ts"
+                outside_file.write_text("export {};")
+                link = project_root / "link"
+                link.symlink_to(outside_dir, target_is_directory=True)
+
+                with pytest.raises(PathOutsideProjectError):
+                    resolve_project_path("link/outside.ts", project_root)
 
 
 class TestApplyPagination:

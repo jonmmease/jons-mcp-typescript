@@ -4,13 +4,12 @@ version = "0.1.0"
 description = "MCP server providing TypeScript development capabilities through vtsls, Prettier, and ESLint"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Jon Mease" }]
 keywords = ["mcp", "typescript", "vtsls", "lsp", "prettier", "eslint", "development"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -49,8 +48,22 @@ jons-mcp-typescript = "jons_mcp_typescript:main"
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["jons_mcp_typescript.daemon.node_modules*"]
+
+[tool.setuptools.package-data]
+jons_mcp_typescript = [
+    "daemon/*.js",
+    "daemon/package.json",
+    "daemon/package-lock.json",
+]
+
+[tool.setuptools.exclude-package-data]
+jons_mcp_typescript = ["daemon/node_modules/**"]
 
 [tool.black]
 line-length = 88
@@ -60,6 +73,8 @@ include = '\.pyi?$'
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -123,8 +138,8 @@ pythonVersion = "3.10"
 reportMissingImports = true
 reportMissingTypeStubs = false
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-timeout>=2.1.0",

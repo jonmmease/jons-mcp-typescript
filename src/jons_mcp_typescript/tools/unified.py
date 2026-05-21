@@ -17,9 +17,10 @@ from ..server import (
     mcp,
     open_file,
     register_diagnostics_event,
+    resolve_project_file,
     wait_for_diagnostics,
 )
-from ..utils import ensure_file_uri
+from ..utils import count_eslint_messages
 
 
 @mcp.tool()
@@ -46,11 +47,11 @@ async def check_all(
             - overallPassed: Whether all checks passed
             - summary: Human-readable summary of check results
     """
+    project_file = resolve_project_file(file_path)
     daemon = get_daemon()
 
     # Read file content
-    with open(file_path, "r", encoding="utf-8") as f:
-        code = f.read()
+    code = project_file.path.read_text(encoding="utf-8")
 
     checks: dict[str, Any] = {}
     tasks: list[Any] = []
@@ -58,18 +59,18 @@ async def check_all(
 
     # Build check tasks
     if include_prettier:
-        tasks.append(daemon.check_formatting(file_path, code))
+        tasks.append(daemon.check_formatting(str(project_file.path), code))
         task_names.append("prettier")
 
     if include_eslint:
-        tasks.append(daemon.lint(file_path, code, fix=False))
+        tasks.append(daemon.lint(str(project_file.path), code, fix=False))
         task_names.append("eslint")
 
     if include_typescript:
         # For TypeScript, ensure vtsls is initialized and file is open
         try:
             client = await ensure_vtsls_indexed(file_path)
-            file_uri = ensure_file_uri(file_path)
+            file_uri = project_file.uri
 
             try:
                 # Clear cached diagnostics and register event BEFORE opening file
@@ -77,7 +78,7 @@ async def check_all(
                 register_diagnostics_event(file_uri)
 
                 # Open/sync file with fresh content from disk
-                await open_file(client, file_path, file_uri)
+                await open_file(client, project_file.path, file_uri)
 
                 # Wait for diagnostics to arrive via event (with timeout)
                 ts_diags = await wait_for_diagnostics(file_uri)
@@ -101,9 +102,11 @@ async def check_all(
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for name, result in zip(task_names, results):
+        for name, result in zip(task_names, results, strict=True):
             if isinstance(result, Exception):
                 checks[name] = {"passed": False, "error": str(result)}
+            elif not isinstance(result, dict):
+                checks[name] = {"passed": False, "error": "Invalid check result"}
             elif name == "prettier":
                 is_formatted = result.get("isFormatted", False)
                 checks["prettier"] = {
@@ -114,12 +117,10 @@ async def check_all(
                 }
             elif name == "eslint":
                 messages = result.get("messages", [])
-                error_count = sum(
-                    1 for msg in messages if msg.get("severity") == 2
-                )
-                warning_count = sum(
-                    1 for msg in messages if msg.get("severity") == 1
-                )
+                error_count = int(result.get("errorCount", 0))
+                warning_count = int(result.get("warningCount", 0))
+                if error_count == 0 and warning_count == 0:
+                    error_count, warning_count = count_eslint_messages(messages)
                 checks["eslint"] = {
                     "passed": error_count == 0,
                     "errorCount": error_count,
@@ -172,11 +173,11 @@ async def fix_all(
             - totalChanges: Number of changes made
             - written: Whether changes were written to file
     """
+    project_file = resolve_project_file(file_path)
     daemon = get_daemon()
 
     # Read original file content
-    with open(file_path, "r", encoding="utf-8") as f:
-        original_code = f.read()
+    original_code = project_file.path.read_text(encoding="utf-8")
 
     current_code = original_code
     fixes: dict[str, Any] = {}
@@ -184,18 +185,16 @@ async def fix_all(
 
     # Run ESLint fix first (often adds imports, fixes logic, etc.)
     if include_eslint:
-        result = await daemon.lint(file_path, current_code, fix=True)
+        result = await daemon.lint(str(project_file.path), current_code, fix=True)
         fixed_content = result.get("fixedContent")
         messages = result.get("messages", [])
 
         if fixed_content and fixed_content != current_code:
             current_code = fixed_content
-            error_count = sum(
-                1 for msg in messages if msg.get("severity") == 2
-            )
-            warning_count = sum(
-                1 for msg in messages if msg.get("severity") == 1
-            )
+            error_count = int(result.get("errorCount", 0))
+            warning_count = int(result.get("warningCount", 0))
+            if error_count == 0 and warning_count == 0:
+                error_count, warning_count = count_eslint_messages(messages)
             total_changes += error_count + warning_count
             fixes["eslint"] = {
                 "applied": True,
@@ -206,7 +205,7 @@ async def fix_all(
 
     # Run Prettier on potentially ESLint-fixed code
     if include_prettier:
-        result = await daemon.format(file_path, current_code)
+        result = await daemon.format(str(project_file.path), current_code)
         formatted_code = result.get("formatted")
 
         if formatted_code and formatted_code != current_code:
@@ -219,8 +218,7 @@ async def fix_all(
     # Write to file if requested and code changed
     written = False
     if write and current_code != original_code:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(current_code)
+        project_file.path.write_text(current_code, encoding="utf-8")
         written = True
 
     return {
