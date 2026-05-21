@@ -11,13 +11,25 @@ MCP server providing TypeScript development capabilities via vtsls, Prettier, an
 
 ## Installation
 
+This project is not published to PyPI yet. Install or run it from GitHub:
+
+```bash
+uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
+  jons-mcp-typescript /path/to/typescript/project
+```
+
 ### Prerequisites
 
-1. **Python 3.10+** with uv or pip
+1. **Python 3.10+** with `uv`
 2. **Node.js 18+**
-3. **vtsls** - TypeScript language server:
+3. **vtsls** - TypeScript language server, installed globally or in the TypeScript project:
    ```bash
+   # Global install
    npm install -g @vtsls/language-server
+
+   # Or project-local install
+   cd /path/to/typescript/project
+   npm install -D @vtsls/language-server
    ```
 4. **Project-local Prettier and ESLint** in the TypeScript project you run the server against:
    ```bash
@@ -25,30 +37,20 @@ MCP server providing TypeScript development capabilities via vtsls, Prettier, an
    npm install -D prettier eslint
    ```
 
-### Install the Package
-
-```bash
-# Using uv (recommended)
-uv pip install jons-mcp-typescript
-
-# Using pip
-pip install jons-mcp-typescript
-```
-
-The Python package includes the small Node daemon source. The daemon intentionally
-uses Prettier and ESLint from your target project's `node_modules` so formatting
-and linting match that project.
+The Python package includes the small Node daemon source. The daemon intentionally uses Prettier and ESLint from your target project's `node_modules` so formatting and linting match that project.
 
 ## Usage
 
 ### Running the Server
 
 ```bash
-# Use current directory as project root
-jons-mcp-typescript
+# Run from GitHub against the current directory
+uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
+  jons-mcp-typescript .
 
-# Specify project root as argument
-jons-mcp-typescript /path/to/typescript/project
+# Run from GitHub against a specific project root
+uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
+  jons-mcp-typescript /path/to/typescript/project
 ```
 
 ### Local Development (Running from Source)
@@ -57,12 +59,13 @@ To run the server locally during development:
 
 ```bash
 # Clone and setup
-git clone https://github.com/jonmmease/jons-mcp-typescript
+git clone https://github.com/jonmmease/jons-mcp-typescript.git
 cd jons-mcp-typescript
 uv sync --dev
 
-# Install TypeScript project formatting/linting dependencies
-cd /path/to/your/typescript/project && npm install -D prettier eslint
+# Install TypeScript project dependencies used by the server
+cd /path/to/your/typescript/project
+npm install -D @vtsls/language-server prettier eslint
 
 # Run against current directory
 uv run jons-mcp-typescript
@@ -72,32 +75,89 @@ uv run jons-mcp-typescript /path/to/your/typescript/project
 
 # Run from anywhere using uv's --project flag (uses cwd as TypeScript project)
 cd /path/to/your/typescript/project
-uv run --project /path/to/jons-mcp-typescript jons-mcp-typescript
+uv run --project /path/to/jons-mcp-typescript jons-mcp-typescript .
 ```
 
 ### MCP Client Configuration
 
-#### Claude Desktop / Claude Code
+#### Claude Code
 
-Add to your MCP settings (e.g., `~/.claude/claude_desktop_config.json`):
+From the TypeScript project root, add the server to Claude Code:
+
+```bash
+cd /path/to/typescript/project
+claude mcp add typescript --scope local -- \
+  uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
+  jons-mcp-typescript .
+```
+
+Use `--scope project` instead of `--scope local` if you want Claude Code to write a shared `.mcp.json` file in the project. A shared project config should look like this:
 
 ```json
 {
   "mcpServers": {
     "typescript": {
-      "command": "jons-mcp-typescript",
-      "args": []
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/jonmmease/jons-mcp-typescript.git",
+        "jons-mcp-typescript",
+        "."
+      ]
     }
   }
 }
 ```
 
-This runs the server in the current working directory (your TypeScript project).
+Verify it with:
 
-#### Local Development Configuration
+```bash
+claude mcp get typescript
+```
 
-When running from source, use `uv run --project` to point to the MCP server repo.
-The TypeScript project defaults to the current working directory:
+#### Codex CLI
+
+From the TypeScript project root, add the server to Codex:
+
+```bash
+cd /path/to/typescript/project
+codex mcp add typescript -- \
+  uvx --from git+https://github.com/jonmmease/jons-mcp-typescript.git \
+  jons-mcp-typescript .
+```
+
+This writes an MCP server entry to Codex's config. The equivalent TOML is:
+
+```toml
+[mcp_servers.typescript]
+command = "uvx"
+args = [
+  "--from",
+  "git+https://github.com/jonmmease/jons-mcp-typescript.git",
+  "jons-mcp-typescript",
+  ".",
+]
+```
+
+Verify it with:
+
+```bash
+codex mcp get typescript
+```
+
+If you want the MCP server to always target one specific TypeScript project, replace the final `"."` with an absolute project path in the CLI command or config.
+
+#### Local Checkout Configuration
+
+For active development on this MCP server, clone the repo and point your MCP client at the checkout:
+
+```bash
+git clone https://github.com/jonmmease/jons-mcp-typescript.git
+cd jons-mcp-typescript
+uv sync --dev
+```
+
+Then configure your MCP client to run:
 
 ```json
 {
@@ -107,14 +167,15 @@ The TypeScript project defaults to the current working directory:
       "args": [
         "run",
         "--project", "/path/to/jons-mcp-typescript",
-        "jons-mcp-typescript"
+        "jons-mcp-typescript",
+        "."
       ]
     }
   }
 }
 ```
 
-This tells uv to use the Python environment from `/path/to/jons-mcp-typescript` and run `jons-mcp-typescript` against the current working directory (your TypeScript project).
+This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript` and run `jons-mcp-typescript` against the current working directory, which should be your TypeScript project.
 
 ## Available Tools
 
@@ -291,7 +352,7 @@ result = await fix_all(
 ### Setup
 
 ```bash
-git clone https://github.com/jonmmease/jons-mcp-typescript
+git clone https://github.com/jonmmease/jons-mcp-typescript.git
 cd jons-mcp-typescript
 uv sync --dev
 ```
@@ -303,7 +364,7 @@ uv sync --dev
 uv run pytest
 
 # Run with coverage
-uv run pytest --cov=jons_mcp_typescript
+uv run pytest --cov=src/jons_mcp_typescript
 
 # Run specific test file
 uv run pytest tests/test_utils.py -v
@@ -313,7 +374,7 @@ uv run pytest tests/test_utils.py -v
 
 Integration tests require:
 - Node.js installed
-- vtsls installed globally
+- vtsls installed globally or in the temporary test project
 - Prettier and ESLint available to the temporary test project
 
 Tests will skip gracefully if dependencies are missing.
