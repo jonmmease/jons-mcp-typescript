@@ -112,8 +112,16 @@ async def test_check_all_typescript_branch_uses_fresh_diagnostics(
 ):
     events: list[str] = []
     diagnostics = [
-        {"severity": 2, "message": "warn"},
-        {"severity": 1, "message": "err"},
+        {
+            "severity": 2,
+            "message": "warn",
+            "range": {"start": {"line": 2, "character": 0}},
+        },
+        {
+            "severity": 1,
+            "message": "err",
+            "range": {"start": {"line": 0, "character": 4}},
+        },
     ]
 
     async def ensure(file_path: str) -> object:
@@ -145,6 +153,18 @@ async def test_check_all_typescript_branch_uses_fresh_diagnostics(
     assert result["checks"]["typescript"]["passed"] is False
     assert result["checks"]["typescript"]["errorCount"] == 1
     assert result["checks"]["typescript"]["warningCount"] == 1
+    assert result["checks"]["typescript"]["diagnostics"] == [
+        {
+            "severity": 2,
+            "message": "warn",
+            "range": {"start": {"line": 3, "character": 1}},
+        },
+        {
+            "severity": 1,
+            "message": "err",
+            "range": {"start": {"line": 1, "character": 5}},
+        },
+    ]
     assert events == [
         "ensure:src/main.ts",
         "open:main.ts:True",

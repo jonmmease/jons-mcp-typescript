@@ -489,6 +489,15 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
 SERVER_INSTRUCTIONS = """
 MCP server providing TypeScript development capabilities via vtsls, Prettier, and ESLint.
 
+## Position Inputs And Results
+Tools that accept or return `line` and `character` use one-based positions to
+match editor, terminal listing, and Read output. If Read shows line 28, pass
+`line=28`; returned ranges also use line 28 for that same source line.
+Use `document_symbols` to get one-based ranges before calling position-based
+tools when helpful.
+For project-wide symbol-name discovery, start with text search to find candidate
+files, then use the semantic position-based tools.
+
 ## Navigation & Discovery
 | Tool | Purpose |
 |------|---------|

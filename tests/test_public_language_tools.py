@@ -80,9 +80,12 @@ async def test_navigation_tools_open_request_and_close(
     }
     fake.responses[lsp_method] = location
 
-    result = await tool("src/main.ts", line=1, character=2)
+    result = await tool("src/main.ts", line=2, character=3)
 
-    assert result == location
+    assert result == {
+        "uri": "file:///project/src/main.ts",
+        "range": {"start": {"line": 3, "character": 5}},
+    }
     assert ensure_calls == ["src/main.ts"]
     assert project_loads == [str(source)]
     assert opened == closed
@@ -123,8 +126,8 @@ async def test_references_sorts_and_paginates(
 
     result = await language.references(
         "src/main.ts",
-        line=0,
-        character=1,
+        line=1,
+        character=2,
         include_declaration=False,
         limit=2,
         offset=1,
@@ -133,6 +136,10 @@ async def test_references_sorts_and_paginates(
     assert [item["uri"] for item in result["items"]] == [
         "file:///project/a.ts",
         "file:///project/b.ts",
+    ]
+    assert [item["range"]["start"] for item in result["items"]] == [
+        {"line": 2, "character": 6},
+        {"line": 4, "character": 1},
     ]
     assert [item["offset"] for item in result["items"]] == [1, 2]
     assert result["hasMore"] is False
@@ -172,6 +179,10 @@ async def test_document_symbols_flattens_sorts_and_closes(
         ("User", None),
         ("name", "User"),
     ]
+    assert [item["range"]["start"] for item in result["items"]] == [
+        {"line": 6, "character": 1},
+        {"line": 7, "character": 3},
+    ]
     assert project_loads == []
     assert opened == closed
 
@@ -190,11 +201,11 @@ async def test_symbol_info_normalizes_hover_content(
         "range": {"start": {"line": 0, "character": 0}},
     }
 
-    result = await language.symbol_info("src/main.ts", line=0, character=6)
+    result = await language.symbol_info("src/main.ts", line=1, character=7)
 
     assert result == {
         "content": "const value: number\ndocs",
-        "range": {"start": {"line": 0, "character": 0}},
+        "range": {"start": {"line": 1, "character": 1}},
     }
     assert project_loads == [str(source)]
     assert opened == closed
@@ -212,7 +223,14 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
     type_file = tool_project / "src" / "types.ts"
     source.write_text("const user = makeUser();\nuser;\n", encoding="utf-8")
     type_file.write_text("export interface User {}\n", encoding="utf-8")
-    type_range = {"start": {"line": 0, "character": 0}, "end": {"line": 10}}
+    type_range = {
+        "start": {"line": 0, "character": 0},
+        "end": {"line": 10, "character": 1},
+    }
+    public_type_range = {
+        "start": {"line": 1, "character": 1},
+        "end": {"line": 11, "character": 2},
+    }
     fake.responses = {
         "textDocument/hover": {"contents": {"value": "User"}},
         "textDocument/typeDefinition": {
@@ -254,13 +272,16 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
 
     result = await language.type_info(
         "src/main.ts",
-        line=1,
-        character=1,
+        line=2,
+        character=2,
         include_documentation=True,
     )
 
     assert result["typeName"] == "User"
-    assert result["sourceLocation"] == {"uri": type_file.as_uri(), "range": type_range}
+    assert result["sourceLocation"] == {
+        "uri": type_file.as_uri(),
+        "range": public_type_range,
+    }
     assert result["fields"] == [
         {"name": "email", "type": "string", "documentation": "Email docs"},
         {"name": "name", "type": "string"},
@@ -290,6 +311,32 @@ async def test_type_info_extracts_in_root_members_and_restores_document(
 
 
 @pytest.mark.asyncio
+async def test_type_info_infers_type_name_from_string_hover(
+    tool_project: Path,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    source.write_text("err;\n", encoding="utf-8")
+    fake.responses = {
+        "textDocument/hover": {"contents": "```typescript\nlet err: Error\n```"},
+        "textDocument/typeDefinition": None,
+        "textDocument/completion": {"items": []},
+    }
+
+    result = await language.type_info("src/main.ts", line=1, character=2)
+
+    assert result["typeName"] == "Error"
+    assert result["fields"] == []
+    assert result["methods"]["items"] == []
+    assert project_loads == [str(source)]
+    assert opened == [source.as_uri()]
+    assert closed == opened
+
+
+@pytest.mark.asyncio
 async def test_type_info_returns_external_source_without_opening_it(
     tool_project: Path,
     tmp_path: Path,
@@ -308,7 +355,7 @@ async def test_type_info_returns_external_source_without_opening_it(
         "textDocument/completion": {"items": []},
     }
 
-    result = await language.type_info("src/main.ts", line=0, character=1)
+    result = await language.type_info("src/main.ts", line=1, character=2)
 
     assert result["sourceLocation"] == {"uri": external.as_uri(), "range": {}}
     assert [call[0] for call in fake.calls] == [
@@ -337,7 +384,7 @@ async def test_type_info_skips_completion_when_identifier_is_not_safe(
         "textDocument/completion": AssertionError("completion should not be requested"),
     }
 
-    result = await language.type_info("src/main.ts", line=0, character=0)
+    result = await language.type_info("src/main.ts", line=1, character=1)
 
     assert result["typeName"] == "unknown"
     assert result["fields"] == []

@@ -291,7 +291,7 @@ async def test_type_info_uses_temporary_dot_completion():
         server._project_root = project_root
         server.vtsls = fake_client  # type: ignore[assignment]
         try:
-            result = await type_info("src/main.ts", line=1, character=1)
+            result = await type_info("src/main.ts", line=2, character=2)
 
             assert result["typeName"] == "User"
             assert result["fields"] == [{"name": "name", "type": "string"}]

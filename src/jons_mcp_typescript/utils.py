@@ -1,7 +1,7 @@
 """Utility functions for the TypeScript MCP server."""
 
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -126,6 +126,34 @@ def apply_pagination(
     }
 
     return result_items, metadata
+
+
+def public_position_to_lsp(line: int, character: int) -> dict[str, int]:
+    """Convert 1-indexed public tool positions to 0-indexed LSP positions."""
+    return {
+        "line": max(line - 1, 0),
+        "character": max(character - 1, 0),
+    }
+
+
+def lsp_result_to_public(value: T) -> T:
+    """Convert LSP position payloads to 1-indexed public tool results."""
+    if isinstance(value, list):
+        return cast(T, [lsp_result_to_public(item) for item in value])
+    if isinstance(value, dict):
+        if _is_lsp_position(value):
+            converted = value.copy()
+            converted["line"] = value["line"] + 1
+            converted["character"] = value["character"] + 1
+            return cast(T, converted)
+        return cast(
+            T, {key: lsp_result_to_public(item) for key, item in value.items()}
+        )
+    return value
+
+
+def _is_lsp_position(value: dict[str, Any]) -> bool:
+    return isinstance(value.get("line"), int) and isinstance(value.get("character"), int)
 
 
 # Sort key functions for consistent pagination ordering

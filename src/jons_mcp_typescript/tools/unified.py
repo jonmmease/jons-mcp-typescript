@@ -20,7 +20,7 @@ from ..server import (
     resolve_project_file,
     wait_for_diagnostics,
 )
-from ..utils import count_eslint_messages
+from ..utils import count_eslint_messages, lsp_result_to_public
 
 
 @mcp.tool()
@@ -90,7 +90,7 @@ async def check_all(
                 "passed": len(ts_diags) == 0,
                 "errorCount": len([d for d in ts_diags if d.get("severity", 1) == 1]),
                 "warningCount": len([d for d in ts_diags if d.get("severity", 1) == 2]),
-                "diagnostics": ts_diags,
+                "diagnostics": lsp_result_to_public(ts_diags),
             }
         except Exception as e:
             checks["typescript"] = {

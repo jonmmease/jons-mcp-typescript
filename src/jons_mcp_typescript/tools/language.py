@@ -4,6 +4,7 @@ Navigation tools: definition, type_definition, implementation, references
 Information tools: symbol_info, type_info
 """
 
+import re
 from typing import Any
 
 from fastmcp import Context
@@ -19,7 +20,12 @@ from ..server import (
     resolve_project_file,
     sync_open_file_content,
 )
-from ..utils import apply_pagination, location_sort_key
+from ..utils import (
+    apply_pagination,
+    location_sort_key,
+    lsp_result_to_public,
+    public_position_to_lsp,
+)
 
 
 @mcp.tool()
@@ -33,14 +39,15 @@ async def definition(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
 
     Returns: Location or LocationLink, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -49,15 +56,15 @@ async def definition(
             "textDocument/definition",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
         # Handle single location or LocationLink array
         if isinstance(result, dict):
-            return result
+            return lsp_result_to_public(result)
         elif isinstance(result, list):
-            return result
+            return lsp_result_to_public(result)
         return None
     finally:
         await close_file(client, file_uri)
@@ -74,14 +81,15 @@ async def type_definition(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
 
     Returns: Location or LocationLink, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -90,15 +98,15 @@ async def type_definition(
             "textDocument/typeDefinition",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
         # Handle single location or LocationLink array
         if isinstance(result, dict):
-            return result
+            return lsp_result_to_public(result)
         elif isinstance(result, list):
-            return result
+            return lsp_result_to_public(result)
         return None
     finally:
         await close_file(client, file_uri)
@@ -115,14 +123,15 @@ async def implementation(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
 
     Returns: Location or LocationLink array, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -131,15 +140,15 @@ async def implementation(
             "textDocument/implementation",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
         # Handle single location or LocationLink array
         if isinstance(result, dict):
-            return result
+            return lsp_result_to_public(result)
         elif isinstance(result, list):
-            return result
+            return lsp_result_to_public(result)
         return None
     finally:
         await close_file(client, file_uri)
@@ -159,8 +168,8 @@ async def references(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
         include_declaration: Whether to include the symbol declaration in results
         limit: Maximum results to return
         offset: Number of results to skip
@@ -170,6 +179,7 @@ async def references(
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -178,7 +188,7 @@ async def references(
             "textDocument/references",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
                 "context": {"includeDeclaration": include_declaration},
             },
         )
@@ -197,7 +207,7 @@ async def references(
 
         # Apply pagination
         paginated, metadata = apply_pagination(sorted_items, offset, limit)
-        return {"items": paginated, **metadata}
+        return {"items": lsp_result_to_public(paginated), **metadata}
     finally:
         await close_file(client, file_uri)
 
@@ -282,7 +292,7 @@ async def document_symbols(
 
         # Apply pagination
         paginated, metadata = apply_pagination(sorted_items, offset, limit)
-        return {"items": paginated, **metadata}
+        return {"items": lsp_result_to_public(paginated), **metadata}
     finally:
         await close_file(client, file_uri)
 
@@ -303,8 +313,8 @@ async def symbol_info(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
 
     Returns:
         Dictionary with 'content' (type signature and docs) and 'range' (source range)
@@ -312,6 +322,7 @@ async def symbol_info(
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -320,27 +331,16 @@ async def symbol_info(
             "textDocument/hover",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
         if not result:
             return {"content": None, "range": None}
 
-        # Extract content from hover response
-        contents = result.get("contents", {})
-        if isinstance(contents, dict):
-            # MarkupContent
-            content = contents.get("value", "")
-        elif isinstance(contents, list):
-            # Array of MarkedString
-            content = "\n".join(
-                c.get("value", str(c)) if isinstance(c, dict) else str(c) for c in contents
-            )
-        else:
-            content = str(contents)
+        content = _hover_contents_to_text(result.get("contents", {}))
 
-        return {"content": content, "range": result.get("range")}
+        return {"content": content, "range": lsp_result_to_public(result.get("range"))}
     finally:
         await close_file(client, file_uri)
 
@@ -361,8 +361,8 @@ async def type_info(
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
         limit: Maximum methods to return (fields always returned in full)
         offset: Offset for method pagination
         include_documentation: Include JSDoc for each member
@@ -377,6 +377,7 @@ async def type_info(
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     # Track files we open so we can close them all
@@ -390,27 +391,20 @@ async def type_info(
             "textDocument/hover",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
         type_name = "unknown"
         if hover_result and hover_result.get("contents"):
-            contents = hover_result["contents"]
-            if isinstance(contents, dict):
-                type_name = contents.get("value", "unknown")
-            elif isinstance(contents, list) and contents:
-                first = contents[0]
-                type_name = (
-                    first.get("value", str(first)) if isinstance(first, dict) else str(first)
-                )
+            type_name = _infer_type_name_from_hover(hover_result["contents"])
 
         # Step 2: Get type definition location
         type_def_result = await client.request(
             "textDocument/typeDefinition",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
             },
         )
 
@@ -429,7 +423,10 @@ async def type_info(
             target_range = type_loc.get("targetRange") or type_loc.get("range")
 
             if target_uri:
-                source_location = {"uri": target_uri, "range": target_range}
+                source_location = {
+                    "uri": target_uri,
+                    "range": lsp_result_to_public(target_range),
+                }
 
                 # Step 3: If local file, get document symbols for type members
                 if target_uri.startswith("file://") and is_project_file_uri(target_uri):
@@ -459,8 +456,8 @@ async def type_info(
             client,
             file_uri,
             project_file.path.read_text(encoding="utf-8"),
-            line,
-            character,
+            position["line"],
+            position["character"],
         )
 
         if completion_items:
@@ -577,6 +574,52 @@ def _extract_type_members(
             _extract_type_members(
                 children, None, fields, methods, include_documentation
             )
+
+
+def _hover_contents_to_text(contents: Any) -> str:
+    if isinstance(contents, dict):
+        return str(contents.get("value", ""))
+    if isinstance(contents, list):
+        parts = []
+        for item in contents:
+            if isinstance(item, dict):
+                value = item.get("value")
+                if value:
+                    parts.append(str(value))
+            elif item is not None:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if contents is None:
+        return ""
+    return str(contents)
+
+
+def _infer_type_name_from_hover(contents: Any) -> str:
+    text = _hover_contents_to_text(contents).strip()
+    if not text:
+        return "unknown"
+
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("```")
+    ]
+    if not lines:
+        return "unknown"
+
+    signature = lines[0]
+    declaration_match = re.search(
+        r"\b(?:interface|class|type|enum)\s+([A-Za-z_$][\w$]*)",
+        signature,
+    )
+    if declaration_match:
+        return declaration_match.group(1)
+
+    colon_index = signature.rfind(":")
+    if colon_index != -1:
+        return signature[colon_index + 1 :].strip().rstrip(";")
+
+    return signature or "unknown"
 
 
 def _is_identifier_char(value: str) -> bool:

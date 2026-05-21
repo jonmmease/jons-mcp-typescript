@@ -172,15 +172,15 @@ def link_project_node_modules(project_root: Path) -> None:
 
 
 def position_of(text: str, needle: str, occurrence: int = 1) -> dict[str, int]:
-    """Return a zero-based LSP position for the requested occurrence."""
+    """Return a one-based public tool position for the requested occurrence."""
     start = -1
     cursor = 0
     for _ in range(occurrence):
         start = text.index(needle, cursor)
         cursor = start + len(needle)
     return {
-        "line": text.count("\n", 0, start),
-        "character": start - (text.rfind("\n", 0, start) + 1),
+        "line": text.count("\n", 0, start) + 1,
+        "character": start - (text.rfind("\n", 0, start) + 1) + 1,
     }
 
 

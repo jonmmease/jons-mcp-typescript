@@ -91,7 +91,7 @@ async def test_diagnostics_file_scope_sorts_paginates_and_closes(
     assert result["items"] == [
         {
             "severity": 1,
-            "range": {"start": {"line": 1, "character": 0}},
+            "range": {"start": {"line": 2, "character": 1}},
             "message": "err",
             "offset": 0,
         }
@@ -149,6 +149,10 @@ async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
             "file:///a.ts",
             "file:///b.ts",
         ]
+        assert [item["range"]["start"] for item in result["items"]] == [
+            {"line": 2, "character": 1},
+            {"line": 3, "character": 1},
+        ]
     finally:
         server.current_diagnostics.clear()
 
@@ -166,8 +170,8 @@ async def test_rename_returns_error_when_prepare_rename_rejects(
 
     result = await intelligence.rename(
         "src/main.ts",
-        line=0,
-        character=6,
+        line=1,
+        character=7,
         new_name="renamed",
     )
 
@@ -186,17 +190,35 @@ async def test_rename_continues_when_prepare_rename_is_unsupported(
 ):
     fake, opened, closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
-    edit = {"changes": {"file:///project/src/main.ts": []}}
+    edit = {
+        "changes": {
+            "file:///project/src/main.ts": [
+                {
+                    "range": {"start": {"line": 0, "character": 6}},
+                    "newText": "renamed",
+                }
+            ]
+        }
+    }
     fake.responses = [RuntimeError("unsupported"), edit]
 
     result = await intelligence.rename(
         "src/main.ts",
-        line=0,
-        character=6,
+        line=1,
+        character=7,
         new_name="renamed",
     )
 
-    assert result == edit
+    assert result == {
+        "changes": {
+            "file:///project/src/main.ts": [
+                {
+                    "range": {"start": {"line": 1, "character": 7}},
+                    "newText": "renamed",
+                }
+            ]
+        }
+    }
     assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == [
         "textDocument/prepareRename",
@@ -228,8 +250,8 @@ async def test_rename_normalizes_failed_results(
 
     result = await intelligence.rename(
         "src/main.ts",
-        line=0,
-        character=6,
+        line=1,
+        character=7,
         new_name="renamed",
     )
 

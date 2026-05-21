@@ -19,7 +19,12 @@ from ..server import (
     resolve_project_file,
     wait_for_diagnostics,
 )
-from ..utils import apply_pagination, diagnostic_sort_key
+from ..utils import (
+    apply_pagination,
+    diagnostic_sort_key,
+    lsp_result_to_public,
+    public_position_to_lsp,
+)
 
 
 @mcp.tool()
@@ -80,7 +85,7 @@ async def diagnostics(
 
     sorted_items = sorted(all_diagnostics, key=diagnostic_sort_key)
     paginated, metadata = apply_pagination(sorted_items, offset, limit)
-    return {"items": paginated, **metadata}
+    return {"items": lsp_result_to_public(paginated), **metadata}
 
 
 @mcp.tool()
@@ -95,8 +100,8 @@ async def rename(
 
     Args:
         file_path: Path to the file containing the symbol
-        line: Line number (0-indexed)
-        character: Column number (0-indexed)
+        line: One-based line number, matching editor/Read output.
+        character: One-based column on that line.
         new_name: New name for the symbol
 
     Returns: WorkspaceEdit with all changes needed
@@ -104,6 +109,7 @@ async def rename(
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
     file_uri = project_file.uri
+    position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
 
     try:
@@ -115,7 +121,7 @@ async def rename(
                 "textDocument/prepareRename",
                 {
                     "textDocument": {"uri": file_uri},
-                    "position": {"line": line, "character": character},
+                    "position": position,
                 },
             )
             if not prepare_result:
@@ -129,7 +135,7 @@ async def rename(
             "textDocument/rename",
             {
                 "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
+                "position": position,
                 "newName": new_name,
             },
         )
@@ -137,7 +143,11 @@ async def rename(
         if not result:
             return {"error": "Rename failed", "changes": {}}
 
-        return result if isinstance(result, dict) else {"error": "Rename failed"}
+        return (
+            lsp_result_to_public(result)
+            if isinstance(result, dict)
+            else {"error": "Rename failed"}
+        )
     finally:
         await close_file(client, file_uri)
 

@@ -233,6 +233,17 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 ## Tool Examples
 
+### Position Inputs And Results
+
+Tools such as `definition`, `references`, `symbol_info`, `type_info`, and
+`rename` use one-based positions for both inputs and returned ranges. If your
+editor, terminal listing, or agent `Read` output shows line 28, pass `line=28`;
+returned ranges also use line 28 for that same source line. When you do not
+already know a position, `document_symbols` returns one-based ranges for the
+symbols in a file.
+For project-wide symbol-name discovery, start with text search to find candidate
+files, then use the semantic position-based tools.
+
 ### Navigate to Definition
 
 ```python
@@ -240,7 +251,7 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 result = await definition(
     file_path="/project/src/index.ts",
     line=10,
-    character=15
+    character=15,
 )
 # Returns: {"uri": "file:///project/src/utils.ts", "range": {...}}
 ```
@@ -252,7 +263,7 @@ result = await definition(
 result = await type_info(
     file_path="/project/src/app.ts",
     line=5,
-    character=8
+    character=8,
 )
 # Returns: {"typeName": "User", "fields": [...], "methods": {...}}
 ```
