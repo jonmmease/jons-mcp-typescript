@@ -1,16 +1,17 @@
-"""Public diagnostics and rename tool behavior tests."""
+"""Public diagnostics and rename-preview tool behavior tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
 from jons_mcp_typescript import server
+from jons_mcp_typescript.schemas import RenamePreviewError, RenamePreviewResult
 from jons_mcp_typescript.tools import intelligence
 
 
 class FakeIntelligenceClient:
-    """Fake vtsls client for diagnostics and rename tests."""
+    """Fake vtsls client for diagnostics and rename-preview tests."""
 
     def __init__(self) -> None:
         self.responses: list[Any] = []
@@ -22,6 +23,12 @@ class FakeIntelligenceClient:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+def test_preview_rename_return_annotation_uses_public_models():
+    hints = get_type_hints(intelligence.preview_rename)
+
+    assert hints["return"] == RenamePreviewResult | RenamePreviewError
 
 
 @pytest.fixture
@@ -158,7 +165,7 @@ async def test_diagnostics_workspace_scope_uses_cached_diagnostics():
 
 
 @pytest.mark.asyncio
-async def test_rename_returns_error_when_prepare_rename_rejects(
+async def test_preview_rename_returns_error_when_prepare_rename_rejects(
     tool_project: Path,
     harness: tuple[
         FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
@@ -168,56 +175,85 @@ async def test_rename_returns_error_when_prepare_rename_rejects(
     source = tool_project / "src" / "main.ts"
     fake.responses = [None]
 
-    result = await intelligence.rename(
+    result = await intelligence.preview_rename(
         "src/main.ts",
         line=1,
         character=7,
         new_name="renamed",
     )
 
-    assert result == {"error": "Symbol cannot be renamed"}
+    assert result == RenamePreviewError(error="Symbol cannot be renamed")
     assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == ["textDocument/prepareRename"]
     assert opened == closed
 
 
 @pytest.mark.asyncio
-async def test_rename_continues_when_prepare_rename_is_unsupported(
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {
+            "changes": {
+                "file:///project/src/main.ts": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 6},
+                            "end": {"line": 0, "character": 12},
+                        },
+                        "newText": "renamed",
+                    }
+                ]
+            }
+        },
+        {
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///project/src/main.ts"},
+                    "edits": [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 6},
+                                "end": {"line": 0, "character": 12},
+                            },
+                            "newText": "renamed",
+                        }
+                    ],
+                }
+            ]
+        },
+    ],
+)
+async def test_preview_rename_normalizes_edit_shapes(
     tool_project: Path,
     harness: tuple[
         FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
     ],
+    edit: dict[str, Any],
 ):
     fake, opened, closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
-    edit = {
-        "changes": {
-            "file:///project/src/main.ts": [
-                {
-                    "range": {"start": {"line": 0, "character": 6}},
-                    "newText": "renamed",
-                }
-            ]
-        }
-    }
     fake.responses = [RuntimeError("unsupported"), edit]
 
-    result = await intelligence.rename(
+    result = await intelligence.preview_rename(
         "src/main.ts",
         line=1,
         character=7,
         new_name="renamed",
     )
 
-    assert result == {
-        "changes": {
-            "file:///project/src/main.ts": [
-                {
-                    "range": {"start": {"line": 1, "character": 7}},
-                    "newText": "renamed",
-                }
-            ]
-        }
+    assert isinstance(result, RenamePreviewResult)
+    assert result.model_dump() == {
+        "edits": [
+            {
+                "uri": "file:///project/src/main.ts",
+                "range": {
+                    "start": {"line": 1, "character": 7},
+                    "end": {"line": 1, "character": 13},
+                },
+                "newText": "renamed",
+            }
+        ],
+        "totalEdits": 1,
     }
     assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == [
@@ -230,13 +266,14 @@ async def test_rename_continues_when_prepare_rename_is_unsupported(
 @pytest.mark.parametrize(
     ("rename_result", "expected"),
     [
-        (None, {"error": "Rename failed", "changes": {}}),
-        ([], {"error": "Rename failed", "changes": {}}),
+        (None, {"error": "Rename failed"}),
+        ([], {"error": "Rename failed"}),
         ("bad", {"error": "Rename failed"}),
+        ({"unexpected": []}, {"error": "Rename returned unsupported edit shape"}),
     ],
 )
 @pytest.mark.asyncio
-async def test_rename_normalizes_failed_results(
+async def test_preview_rename_normalizes_failed_results(
     tool_project: Path,
     harness: tuple[
         FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
@@ -248,13 +285,14 @@ async def test_rename_normalizes_failed_results(
     source = tool_project / "src" / "main.ts"
     fake.responses = [{"range": {}}, rename_result]
 
-    result = await intelligence.rename(
+    result = await intelligence.preview_rename(
         "src/main.ts",
         line=1,
         character=7,
         new_name="renamed",
     )
 
-    assert result == expected
+    assert isinstance(result, RenamePreviewError)
+    assert result.model_dump() == expected
     assert project_loads == [str(source)]
     assert opened == closed

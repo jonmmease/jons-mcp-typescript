@@ -206,7 +206,7 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 | Tool | Purpose |
 |------|---------|
-| `rename` | Safely rename a symbol across the project |
+| `preview_rename` | Preview a symbol rename across the project without writing files |
 
 ### Formatting & Linting
 
@@ -245,17 +245,18 @@ level tools when you need only one formatter or linter operation. For
 project-wide symbol-name discovery, start with text search to find candidate
 files, then use `document_symbols` or the semantic position-based tools.
 
-`rename` is safe to inspect: it returns a `WorkspaceEdit` preview of the files
-and ranges that should change. It does not write to disk by itself.
+`preview_rename` is safe to inspect: it returns `edits`, a flat list of file
+URI, one-based replacement range, and `newText` values, plus `totalEdits`. It
+does not write to disk by itself.
 
 ### Position Inputs And Results
 
 Tools such as `definition`, `references`, `symbol_info`, `type_info`, and
-`rename` use one-based positions for both inputs and returned ranges. If your
-editor, terminal listing, or agent `Read` output shows line 28, pass `line=28`;
-returned ranges also use line 28 for that same source line. When you do not
-already know a position, `document_symbols` returns one-based ranges for the
-symbols in a file.
+`preview_rename` use one-based positions for both inputs and returned ranges. If
+your editor, terminal listing, or agent `Read` output shows line 28, pass
+`line=28`; returned ranges also use line 28 for that same source line. When you
+do not already know a position, `document_symbols` returns one-based ranges for
+the symbols in a file.
 
 ### Navigate to Definition
 
@@ -306,13 +307,17 @@ result = await fix_all(
 
 ```python
 # Preview a cross-project symbol rename without writing files
-result = await rename(
+result = await preview_rename(
     file_path="/project/src/app.ts",
     line=12,
     character=8,
     new_name="newName",
 )
-# Returns: {"changes": {...}} or {"documentChanges": [...]}
+# Returns:
+# {
+#   "edits": [{"uri": "file:///project/src/app.ts", "range": {...}, "newText": "newName"}],
+#   "totalEdits": 1,
+# }
 ```
 
 ## Architecture

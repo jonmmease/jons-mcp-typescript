@@ -42,7 +42,7 @@ async def definition(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: Location or LocationLink, or None if not found
+    Returns: File location dict, list of file location dicts, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -60,7 +60,7 @@ async def definition(
             },
         )
 
-        # Handle single location or LocationLink array
+        # Handle single location or list of linked locations
         if isinstance(result, dict):
             return lsp_result_to_public(result)
         elif isinstance(result, list):
@@ -84,7 +84,7 @@ async def type_definition(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: Location or LocationLink, or None if not found
+    Returns: File location dict, list of file location dicts, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -102,7 +102,7 @@ async def type_definition(
             },
         )
 
-        # Handle single location or LocationLink array
+        # Handle single location or list of linked locations
         if isinstance(result, dict):
             return lsp_result_to_public(result)
         elif isinstance(result, list):
@@ -126,7 +126,7 @@ async def implementation(
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: Location or LocationLink array, or None if not found
+    Returns: File location dict, list of file location dicts, or None if not found
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -144,7 +144,7 @@ async def implementation(
             },
         )
 
-        # Handle single location or LocationLink array
+        # Handle single location or list of linked locations
         if isinstance(result, dict):
             return lsp_result_to_public(result)
         elif isinstance(result, list):
@@ -174,7 +174,7 @@ async def references(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
+    Returns: Paginated usages. Each item includes a file URI and one-based range.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -231,7 +231,7 @@ async def document_symbols(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
+    Returns: Paginated symbols. Each item includes its name, kind, and one-based range.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -309,7 +309,7 @@ async def symbol_info(
     character: int,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Get type signature and docs for any symbol (via hover).
+    """Get type signature and docs for any symbol.
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
@@ -317,7 +317,7 @@ async def symbol_info(
         character: One-based column on that line.
 
     Returns:
-        Dictionary with 'content' (type signature and docs) and 'range' (source range)
+        Dictionary with 'content' (type signature and docs) and 'range' (one-based source range)
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -372,7 +372,7 @@ async def type_info(
         - typeName: The inferred type name
         - fields: List of field definitions with name and type
         - methods: Paginated list of methods with signatures
-        - sourceLocation: Location of the type definition (if available)
+        - sourceLocation: File URI and one-based range for the type definition (if available)
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)

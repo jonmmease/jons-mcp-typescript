@@ -496,8 +496,9 @@ for automatic ESLint fixes followed by Prettier formatting. Reach for
 `format_code`, `check_formatting`, or `lint_code` only when a single formatter
 or linter operation is specifically needed.
 
-`rename` returns a WorkspaceEdit preview and does not write files. It is safe to
-call before deciding whether to apply edits.
+`preview_rename` returns `edits`, a flat list of file URI, one-based replacement
+range, and `newText` values, plus `totalEdits`. It does not write files, so it
+is safe to call before deciding whether to apply edits.
 
 ## Position Inputs And Results
 Tools that accept or return `line` and `character` use one-based positions to

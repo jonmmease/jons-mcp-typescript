@@ -196,20 +196,19 @@ def location_basenames(result: dict | list | None) -> set[str]:
     return basenames
 
 
-def workspace_edit_basenames(edit: dict) -> set[str]:
-    """Extract file basenames from a WorkspaceEdit."""
-    basenames = set()
-    changes = edit.get("changes", {})
-    if isinstance(changes, dict):
-        for uri in changes:
-            basenames.add(Path(uri.removeprefix("file://")).name)
+def rename_preview_basenames(preview: object) -> set[str]:
+    """Extract file basenames from a normalized rename preview."""
+    if hasattr(preview, "model_dump"):
+        preview = preview.model_dump()
+    if not isinstance(preview, dict):
+        return set()
 
-    document_changes = edit.get("documentChanges", [])
-    if isinstance(document_changes, list):
-        for change in document_changes:
-            if isinstance(change, dict):
-                text_document = change.get("textDocument", {})
-                uri = text_document.get("uri") if isinstance(text_document, dict) else None
+    basenames = set()
+    edits = preview.get("edits", [])
+    if isinstance(edits, list):
+        for edit in edits:
+            if isinstance(edit, dict):
+                uri = edit.get("uri")
                 if isinstance(uri, str):
                     basenames.add(Path(uri.removeprefix("file://")).name)
     return basenames
@@ -1158,7 +1157,7 @@ class TestProjectGraphReadiness:
             server_state.clear_project_load_cache()
 
     @pytest.mark.asyncio
-    async def test_rename_includes_unopened_project_files(
+    async def test_preview_rename_includes_unopened_project_files(
         self, cross_file_ts_project: Path
     ):
         client = VtslsClient(cross_file_ts_project)
@@ -1170,13 +1169,13 @@ class TestProjectGraphReadiness:
             await client.start()
 
             types_text = (cross_file_ts_project / "src" / "types.ts").read_text()
-            rename_result = await intelligence.rename(
+            rename_result = await intelligence.preview_rename(
                 "src/types.ts",
                 new_name="renamedTarget",
                 **position_of(types_text, "target"),
             )
 
-            assert workspace_edit_basenames(rename_result) == {
+            assert rename_preview_basenames(rename_result) == {
                 "a.ts",
                 "b.ts",
                 "types.ts",

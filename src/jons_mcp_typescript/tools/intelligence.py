@@ -1,9 +1,13 @@
-"""Intelligence tools for TypeScript development - diagnostics and rename."""
+"""Intelligence tools for TypeScript development - diagnostics and rename preview."""
+
+from typing import Any
 
 from fastmcp import Context
+from pydantic import ValidationError
 
 from .. import server as server_state
 from ..constants import DEFAULT_LIMIT, DEFAULT_OFFSET
+from ..schemas import RenamePreviewEdit, RenamePreviewError, RenamePreviewResult
 from ..server import (
     clear_diagnostics_for_uri,
     close_file,
@@ -44,7 +48,7 @@ async def diagnostics(
         limit: Maximum results to return
         offset: Number of results to skip
 
-    Returns: {items: [...], totalItems, offset, limit, hasMore, nextOffset}
+    Returns: Paginated type issues and warnings with one-based ranges.
     """
     all_diagnostics = []
 
@@ -89,16 +93,23 @@ async def diagnostics(
 
 
 @mcp.tool()
-async def rename(
+async def preview_rename(
     file_path: str,
     line: int,
     character: int,
     new_name: str,
     ctx: Context | None = None,
-) -> dict:
-    """Preview a safe symbol rename across the project.
+) -> RenamePreviewResult | RenamePreviewError:
+    """Preview a symbol rename across the project without writing files.
 
-    This returns a WorkspaceEdit only. It does not write files.
+    Returns a normalized preview with:
+    - edits: Flat list of file edits to apply
+    - edits[].uri: File URI to edit
+    - edits[].range: One-based replacement range with start/end line/character
+    - edits[].newText: Replacement text for that range
+    - totalEdits: Total number of replacement edits
+
+    The caller must apply the edits separately; this tool never modifies files.
 
     Args:
         file_path: Path to the file containing the symbol
@@ -106,7 +117,7 @@ async def rename(
         character: One-based column on that line.
         new_name: New name for the symbol
 
-    Returns: WorkspaceEdit with all changes needed, or an error dict
+    Returns: RenamePreviewResult, or RenamePreviewError.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -127,7 +138,7 @@ async def rename(
                 },
             )
             if not prepare_result:
-                return {"error": "Symbol cannot be renamed"}
+                return RenamePreviewError(error="Symbol cannot be renamed")
         except Exception:
             # prepareRename is optional, continue with rename
             pass
@@ -143,15 +154,83 @@ async def rename(
         )
 
         if not result:
-            return {"error": "Rename failed", "changes": {}}
+            return RenamePreviewError(error="Rename failed")
 
-        return (
-            lsp_result_to_public(result)
-            if isinstance(result, dict)
-            else {"error": "Rename failed"}
-        )
+        if not isinstance(result, dict):
+            return RenamePreviewError(error="Rename failed")
+
+        try:
+            return _normalize_rename_preview(result)
+        except (TypeError, ValidationError):
+            return RenamePreviewError(error="Rename returned unsupported edit shape")
     finally:
         await close_file(client, file_uri)
+
+
+def _normalize_rename_preview(result: dict[str, Any]) -> RenamePreviewResult:
+    edits: list[RenamePreviewEdit] = []
+    found_edit_container = False
+
+    changes = result.get("changes")
+    if isinstance(changes, dict):
+        found_edit_container = True
+        for uri, uri_edits in changes.items():
+            if isinstance(uri, str) and isinstance(uri_edits, list):
+                edits.extend(_rename_edits_for_uri(uri, uri_edits))
+
+    document_changes = result.get("documentChanges")
+    if isinstance(document_changes, list):
+        found_edit_container = True
+        for document_change in document_changes:
+            if not isinstance(document_change, dict):
+                continue
+            text_document = document_change.get("textDocument")
+            uri = (
+                text_document.get("uri")
+                if isinstance(text_document, dict)
+                else None
+            )
+            uri_edits = document_change.get("edits")
+            if isinstance(uri, str) and isinstance(uri_edits, list):
+                edits.extend(_rename_edits_for_uri(uri, uri_edits))
+
+    if not found_edit_container:
+        raise TypeError("Rename result did not contain edits")
+
+    edits.sort(
+        key=lambda edit: (
+            edit.uri,
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.newText,
+        )
+    )
+    return RenamePreviewResult(edits=edits, totalEdits=len(edits))
+
+
+def _rename_edits_for_uri(
+    uri: str, raw_edits: list[Any]
+) -> list[RenamePreviewEdit]:
+    edits: list[RenamePreviewEdit] = []
+    for raw_edit in raw_edits:
+        if not isinstance(raw_edit, dict):
+            continue
+        raw_range = raw_edit.get("range")
+        new_text = raw_edit.get("newText")
+        if not isinstance(raw_range, dict) or not isinstance(new_text, str):
+            continue
+        edits.append(
+            RenamePreviewEdit.model_validate(
+                {
+                    "uri": uri,
+                    "range": lsp_result_to_public(raw_range),
+                    "newText": new_text,
+                }
+            )
+        )
+    return edits
 
 
 @mcp.tool()

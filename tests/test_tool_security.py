@@ -27,14 +27,16 @@ def tool_calls() -> dict[str, ToolCall]:
         "lint_code": lambda path: linting.lint_code(path, code=""),
         "get_eslint_config": lambda path: linting.get_eslint_config(path),
         "diagnostics": lambda path: intelligence.diagnostics(path, scope="file"),
-        "rename": lambda path: intelligence.rename(path, 0, 0, "renamed"),
-        "definition": lambda path: language.definition(path, 0, 0),
-        "type_definition": lambda path: language.type_definition(path, 0, 0),
-        "implementation": lambda path: language.implementation(path, 0, 0),
-        "references": lambda path: language.references(path, 0, 0),
+        "preview_rename": lambda path: intelligence.preview_rename(
+            path, 1, 1, "renamed"
+        ),
+        "definition": lambda path: language.definition(path, 1, 1),
+        "type_definition": lambda path: language.type_definition(path, 1, 1),
+        "implementation": lambda path: language.implementation(path, 1, 1),
+        "references": lambda path: language.references(path, 1, 1),
         "document_symbols": lambda path: language.document_symbols(path),
-        "symbol_info": lambda path: language.symbol_info(path, 0, 0),
-        "type_info": lambda path: language.type_info(path, 0, 0),
+        "symbol_info": lambda path: language.symbol_info(path, 1, 1),
+        "type_info": lambda path: language.type_info(path, 1, 1),
         "check_all": lambda path: unified.check_all(path),
         "fix_all": lambda path: unified.fix_all(path, write=True),
     }

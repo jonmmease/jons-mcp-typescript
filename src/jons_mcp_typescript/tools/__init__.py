@@ -17,7 +17,7 @@ Type Checking:
     - diagnostics: Get type errors and warnings
 
 Refactoring:
-    - rename: Safely rename a symbol across the project
+    - preview_rename: Preview a symbol rename without writing files
 
 Formatting:
     - format_code: Format code using Prettier
@@ -40,7 +40,7 @@ from . import formatting, intelligence, language, linting, unified
 
 # Re-export all tools for convenient access
 from .formatting import check_formatting, format_code, get_prettier_config
-from .intelligence import diagnostics, rename, restart_server
+from .intelligence import diagnostics, preview_rename, restart_server
 from .language import (
     definition,
     document_symbols,
@@ -66,7 +66,7 @@ __all__ = [
     # Type checking
     "diagnostics",
     # Refactoring
-    "rename",
+    "preview_rename",
     # Formatting
     "format_code",
     "check_formatting",
