@@ -307,7 +307,8 @@ async def restart_server(ctx: Context | None = None) -> str:
     """Restart TypeScript language server.
 
     Use this after making changes to tsconfig.json or when the server
-    seems to be in a bad state.
+    seems to be in a bad state. This also reloads discovered workspace
+    projects for monorepo semantic navigation.
 
     Returns: Status message
     """
@@ -323,6 +324,7 @@ async def restart_server(ctx: Context | None = None) -> str:
 
     # Restart the language server and daemon.
     await client.restart()
+    await server_state.preload_workspace_projects(client)
     daemon = get_daemon()
     await daemon.restart()
 

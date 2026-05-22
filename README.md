@@ -229,7 +229,7 @@ This tells `uv` to use the Python environment from `/path/to/jons-mcp-typescript
 
 | Tool | Purpose |
 |------|---------|
-| `restart_server` | Restart TypeScript language server and daemon |
+| `restart_server` | Restart TypeScript language server and daemon, then reload workspace projects |
 
 ## Tool Examples
 
@@ -248,6 +248,14 @@ files, then use `document_symbols` or the semantic position-based tools.
 `preview_rename` is safe to inspect: it returns `edits`, a flat list of file
 URI, one-based replacement range, and `newText` values, plus `totalEdits`. It
 does not write to disk by itself.
+
+For monorepos, start the server at the workspace root. The server auto-discovers
+`pnpm-workspace.yaml` and `package.json` workspaces, then preloads package
+`tsconfig.json` projects so `references`, `implementation`, and `preview_rename`
+can see across loaded packages. Re-run `restart_server` after changing
+workspace manifests or package `tsconfig.json` files. Repos without supported
+workspace manifests or a root `tsconfig.json` may under-report cross-package
+semantic results.
 
 ### Position Inputs And Results
 
@@ -366,7 +374,8 @@ result = await preview_rename(
 
 - **Prettier**: Resolves `.prettierrc`, `.prettierrc.json`, `.prettierrc.js`, etc.
 - **ESLint**: Resolves `eslint.config.js` (flat config) or `.eslintrc.*`
-- **TypeScript**: Resolves `tsconfig.json`
+- **TypeScript**: Resolves `tsconfig.json`; monorepos with `pnpm-workspace.yaml`
+  or `package.json` workspaces preload package projects automatically
 
 ## Development
 

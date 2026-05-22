@@ -446,11 +446,14 @@ export class ImplB implements Service {
         yield project_root
 
 
-@pytest.fixture
-def monorepo_ts_project() -> Generator[Path, None, None]:
-    """Create a referenced-package monorepo for cross-project LSP probes."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_root = Path(tmpdir)
+def _write_monorepo_ts_project(
+    project_root: Path,
+    *,
+    root_tsconfig: bool,
+    workspace_manifest: str,
+) -> None:
+    """Create a small package monorepo for cross-project LSP probes."""
+    if workspace_manifest == "package_json":
         (project_root / "package.json").write_text(
             json.dumps(
                 {
@@ -464,6 +467,27 @@ def monorepo_ts_project() -> Generator[Path, None, None]:
             ),
             encoding="utf-8",
         )
+    elif workspace_manifest == "pnpm":
+        (project_root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "monorepo-project",
+                    "version": "1.0.0",
+                    "private": True,
+                    "type": "module",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (project_root / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "packages/*"\n',
+            encoding="utf-8",
+        )
+    else:
+        raise ValueError(f"Unknown workspace manifest: {workspace_manifest}")
+
+    if root_tsconfig:
         (project_root / "tsconfig.json").write_text(
             json.dumps(
                 {
@@ -479,62 +503,62 @@ def monorepo_ts_project() -> Generator[Path, None, None]:
             encoding="utf-8",
         )
 
-        common_options = {
-            "composite": True,
-            "declaration": True,
-            "target": "ES2020",
-            "module": "ESNext",
-            "moduleResolution": "node",
-            "strict": True,
-            "rootDir": "src",
-            "outDir": "dist",
-            "skipLibCheck": True,
-        }
-        package_options = {
-            "composite": True,
-            "declaration": True,
-            "target": "ES2020",
-            "module": "ESNext",
-            "moduleResolution": "node",
-            "strict": True,
-            "baseUrl": ".",
-            "paths": {"@fixture/common": ["../common/src/index.ts"]},
-            "outDir": "dist",
-            "skipLibCheck": True,
-        }
+    common_options = {
+        "composite": True,
+        "declaration": True,
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "node",
+        "strict": True,
+        "rootDir": "src",
+        "outDir": "dist",
+        "skipLibCheck": True,
+    }
+    package_options = {
+        "composite": True,
+        "declaration": True,
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "node",
+        "strict": True,
+        "baseUrl": ".",
+        "paths": {"@fixture/common": ["../common/src/index.ts"]},
+        "outDir": "dist",
+        "skipLibCheck": True,
+    }
 
-        for package_name in ("common", "server", "worker"):
-            package_dir = project_root / "packages" / package_name
-            (package_dir / "src").mkdir(parents=True)
-            tsconfig = {
-                "compilerOptions": (
-                    common_options
-                    if package_name == "common"
-                    else package_options
-                ),
-                "include": ["src/**/*"],
-            }
-            if package_name != "common":
-                tsconfig["references"] = [{"path": "../common"}]
-            (package_dir / "tsconfig.json").write_text(
-                json.dumps(tsconfig, indent=2),
-                encoding="utf-8",
-            )
-            (package_dir / "package.json").write_text(
-                json.dumps(
-                    {
-                        "name": f"@fixture/{package_name}",
-                        "version": "1.0.0",
-                        "type": "module",
-                        "exports": {"./package.json": "./package.json"},
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+    for package_name in ("common", "server", "worker"):
+        package_dir = project_root / "packages" / package_name
+        (package_dir / "src").mkdir(parents=True)
+        tsconfig = {
+            "compilerOptions": (
+                common_options
+                if package_name == "common"
+                else package_options
+            ),
+            "include": ["src/**/*"],
+        }
+        if package_name != "common":
+            tsconfig["references"] = [{"path": "../common"}]
+        (package_dir / "tsconfig.json").write_text(
+            json.dumps(tsconfig, indent=2),
+            encoding="utf-8",
+        )
+        (package_dir / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": f"@fixture/{package_name}",
+                    "version": "1.0.0",
+                    "type": "module",
+                    "exports": {"./package.json": "./package.json"},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
-        (project_root / "packages" / "common" / "src" / "errors.ts").write_text(
-            """export interface TraceIdError {
+    (project_root / "packages" / "common" / "src" / "errors.ts").write_text(
+        """export interface TraceIdError {
   traceId: string;
 }
 
@@ -542,15 +566,15 @@ export function createTraceIdError(message: string): TraceIdError {
   return { traceId: `trace:${message}` };
 }
 """,
-            encoding="utf-8",
-        )
-        (project_root / "packages" / "common" / "src" / "index.ts").write_text(
-            """export { createTraceIdError, type TraceIdError } from "./errors";
+        encoding="utf-8",
+    )
+    (project_root / "packages" / "common" / "src" / "index.ts").write_text(
+        """export { createTraceIdError, type TraceIdError } from "./errors";
 """,
-            encoding="utf-8",
-        )
-        (project_root / "packages" / "server" / "src" / "handler.ts").write_text(
-            """import { createTraceIdError, type TraceIdError } from "@fixture/common";
+        encoding="utf-8",
+    )
+    (project_root / "packages" / "server" / "src" / "handler.ts").write_text(
+        """import { createTraceIdError, type TraceIdError } from "@fixture/common";
 
 export class ServerTraceError extends Error implements TraceIdError {
   traceId = "server";
@@ -560,10 +584,10 @@ export function handleServer(): TraceIdError {
   return createTraceIdError("server");
 }
 """,
-            encoding="utf-8",
-        )
-        (project_root / "packages" / "worker" / "src" / "worker.ts").write_text(
-            """import { createTraceIdError, type TraceIdError } from "@fixture/common";
+        encoding="utf-8",
+    )
+    (project_root / "packages" / "worker" / "src" / "worker.ts").write_text(
+        """import { createTraceIdError, type TraceIdError } from "@fixture/common";
 
 export class WorkerTraceError extends Error implements TraceIdError {
   traceId = "worker";
@@ -573,7 +597,33 @@ export function handleWorker(): TraceIdError {
   return createTraceIdError("worker");
 }
 """,
-            encoding="utf-8",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def monorepo_ts_project() -> Generator[Path, None, None]:
+    """Create a referenced-package monorepo for cross-project LSP probes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        _write_monorepo_ts_project(
+            project_root,
+            root_tsconfig=True,
+            workspace_manifest="package_json",
+        )
+
+        yield project_root
+
+
+@pytest.fixture
+def pnpm_monorepo_ts_project() -> Generator[Path, None, None]:
+    """Create a pnpm workspace monorepo with no root solution tsconfig."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        _write_monorepo_ts_project(
+            project_root,
+            root_tsconfig=False,
+            workspace_manifest="pnpm",
         )
 
         yield project_root
@@ -1402,6 +1452,84 @@ class TestProjectGraphReadiness:
 @pytest.mark.skipif(not VTSLS_AVAILABLE, reason="vtsls not available")
 class TestMonorepoProjectReferences:
     """Characterize public tool behavior across referenced package projects."""
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_workspace_preload_enables_pnpm_monorepo_without_root_tsconfig(
+        self, pnpm_monorepo_ts_project: Path
+    ):
+        client = VtslsClient(pnpm_monorepo_ts_project)
+        server_state._project_root = pnpm_monorepo_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+            stats = await server_state.preload_workspace_projects(
+                client,
+                pnpm_monorepo_ts_project,
+            )
+
+            assert stats.failures == {}
+            assert set(stats.loaded_projects) == {
+                "packages/common/tsconfig.json",
+                "packages/server/tsconfig.json",
+                "packages/worker/tsconfig.json",
+            }
+
+            common_text = (
+                pnpm_monorepo_ts_project / "packages" / "common" / "src" / "errors.ts"
+            ).read_text()
+            references_result = await language.references(
+                "packages/common/src/errors.ts",
+                include_declaration=True,
+                **position_of(common_text, "createTraceIdError"),
+            )
+            assert_monorepo_paths_include(
+                location_project_paths(references_result, pnpm_monorepo_ts_project),
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "references after workspace preload",
+            )
+
+            implementation_result = await language.implementation(
+                "packages/common/src/errors.ts",
+                **position_of(common_text, "TraceIdError"),
+            )
+            assert_monorepo_paths_include(
+                location_project_paths(implementation_result, pnpm_monorepo_ts_project),
+                {
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "implementation after workspace preload",
+            )
+
+            rename_result = await intelligence.preview_rename(
+                "packages/common/src/errors.ts",
+                new_name="createWorkspaceTraceIdError",
+                **position_of(common_text, "createTraceIdError"),
+            )
+            assert_monorepo_paths_include(
+                rename_preview_project_paths(rename_result, pnpm_monorepo_ts_project),
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "preview_rename after workspace preload",
+            )
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
 
     @pytest.mark.integration
     @pytest.mark.asyncio

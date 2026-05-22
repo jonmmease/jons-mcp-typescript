@@ -173,6 +173,7 @@ async def test_check_all_fails_on_eslint_error(monkeypatch, project_file):
 async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
     fake_vtsls = Restartable()
     fake_daemon = Restartable()
+    preload_calls = []
     server.vtsls = fake_vtsls  # type: ignore[assignment]
     server.current_diagnostics["file:///x.ts"] = []
     server.pending_diagnostics_events["file:///x.ts"] = object()  # type: ignore[assignment]
@@ -184,10 +185,17 @@ async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
             lambda: fake_daemon,
         )
 
+        async def preload(client):
+            preload_calls.append(client)
+            return None
+
+        monkeypatch.setattr(server, "preload_workspace_projects", preload)
+
         result = await restart_server()
 
         assert fake_vtsls.restart_count == 1
         assert fake_daemon.restart_count == 1
+        assert preload_calls == [fake_vtsls]
         assert server.current_diagnostics == {}
         assert server.pending_diagnostics_events == {}
         assert server.loaded_project_configs == set()

@@ -18,6 +18,10 @@ from .daemon_client import FormatterLinterDaemon
 from .exceptions import DocumentSyncError, ProjectLoadError, VtslsNotInitializedError
 from .lsp_client import VtslsClient
 from .utils import resolve_project_path
+from .workspace import (
+    WorkspacePreloadStats,
+    discover_workspace_projects,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,7 @@ pending_diagnostics_events: dict[str, asyncio.Event] = {}  # uri -> event for wa
 _project_root: Path | None = None
 loaded_project_configs: set[str] = set()
 project_file_configs: dict[str, str] = {}
+workspace_preload_stats = WorkspacePreloadStats()
 
 
 def get_project_root() -> Path:
@@ -183,6 +188,53 @@ def clear_project_load_cache() -> None:
     """Clear cached TypeScript project graph readiness state."""
     loaded_project_configs.clear()
     project_file_configs.clear()
+
+
+async def preload_workspace_projects(
+    client: VtslsClient,
+    project_root: Path | None = None,
+) -> WorkspacePreloadStats:
+    """Best-effort preload of discovered workspace TypeScript projects."""
+    global workspace_preload_stats
+
+    root = (project_root or get_project_root()).expanduser().resolve(strict=True)
+    projects = discover_workspace_projects(root)
+    stats = WorkspacePreloadStats(
+        discovered_projects=[
+            project.tsconfig_path.relative_to(root).as_posix()
+            for project in projects
+        ]
+    )
+
+    logger.info("Discovered %d TypeScript workspace projects", len(projects))
+
+    for project in projects:
+        project_key = project.tsconfig_path.relative_to(root).as_posix()
+        representative = project.representative_file
+        if representative is None:
+            stats.skipped_projects[project_key] = "No representative source file found"
+            logger.info("Skipping workspace project with no source file: %s", project_key)
+            continue
+
+        file_uri = representative.as_uri()
+        try:
+            await open_file(client, representative, file_uri)
+            try:
+                await ensure_project_loaded(client, representative)
+            finally:
+                await close_file(client, file_uri)
+            stats.loaded_projects.append(project_key)
+            logger.info("Preloaded TypeScript workspace project: %s", project_key)
+        except Exception as exc:
+            stats.failures[project_key] = str(exc)
+            logger.warning(
+                "Failed to preload TypeScript workspace project %s: %s",
+                project_key,
+                exc,
+            )
+
+    workspace_preload_stats = stats
+    return stats
 
 
 async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> str:
@@ -458,6 +510,9 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
         # Start the vtsls client
         await vtsls.start()
 
+        # Preload workspace projects before user requests arrive.
+        await preload_workspace_projects(vtsls, project_root)
+
         # Start daemon for formatting and linting
         daemon = FormatterLinterDaemon.create(project_root)
         await daemon.start()
@@ -507,10 +562,12 @@ fresh TypeScript diagnostics for one file.
 range, and `newText` values, plus `totalEdits`. It does not write files, so it
 is safe to call before deciding whether to apply edits. In monorepos,
 `implementation` and `preview_rename` aggregate semantic results across packages
-inside the configured project root. Start this server at the monorepo root for
+inside the configured project root after vtsls has loaded those package projects.
+This server auto-discovers `pnpm-workspace.yaml` and `package.json` workspaces
+and preloads package `tsconfig.json` projects. Start it at the monorepo root for
 cross-package results; if started inside one package, sibling packages stay
-outside the security boundary. `references` may still report external locations,
-but follow-up aggregation only opens in-root files.
+outside the security boundary. `restart_server` reloads workspace projects after
+tsconfig or workspace manifest changes.
 
 Use `symbol_info` for quick hover-style signature/type text and docs at a
 position. Use `type_info_of_reference` when you need structured TypeScript
