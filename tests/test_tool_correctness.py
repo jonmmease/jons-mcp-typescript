@@ -1,5 +1,6 @@
 """Unit tests for tool result normalization."""
 
+import asyncio
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -71,14 +72,36 @@ class FailingDaemonLifecycle:
         return None
 
 
+class SuccessfulDaemonLifecycle:
+    instances: list["SuccessfulDaemonLifecycle"] = []
+
+    def __init__(self, project_root: Path) -> None:
+        self.project_root = project_root
+        self.start_called = False
+        self.shutdown_called = False
+        SuccessfulDaemonLifecycle.instances.append(self)
+
+    @classmethod
+    def create(cls, project_root: Path) -> "SuccessfulDaemonLifecycle":
+        return cls(project_root)
+
+    async def start(self) -> None:
+        self.start_called = True
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
 class FakeTypeInfoClient:
     def __init__(self) -> None:
         self.documents: dict[str, str] = {}
+        self.notifications: list[tuple[str, dict[str, Any]]] = []
 
     def is_initialized(self) -> bool:
         return True
 
     async def notify(self, method: str, params: dict[str, Any]) -> None:
+        self.notifications.append((method, params))
         if method == "textDocument/didOpen":
             text_document = params["textDocument"]
             self.documents[text_document["uri"]] = text_document["text"]
@@ -173,7 +196,8 @@ async def test_check_all_fails_on_eslint_error(monkeypatch, project_file):
 async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
     fake_vtsls = Restartable()
     fake_daemon = Restartable()
-    preload_calls = []
+    cancel_calls = 0
+    schedule_calls = []
     server.vtsls = fake_vtsls  # type: ignore[assignment]
     server.current_diagnostics["file:///x.ts"] = []
     server.pending_diagnostics_events["file:///x.ts"] = object()  # type: ignore[assignment]
@@ -185,22 +209,28 @@ async def test_restart_server_restarts_language_server_and_daemon(monkeypatch):
             lambda: fake_daemon,
         )
 
-        async def preload(client):
-            preload_calls.append(client)
+        async def cancel():
+            nonlocal cancel_calls
+            cancel_calls += 1
+
+        async def schedule(client, project_root=None, *, reason: str = "startup"):
+            schedule_calls.append((client, project_root, reason))
             return None
 
-        monkeypatch.setattr(server, "preload_workspace_projects", preload)
+        monkeypatch.setattr(server, "cancel_workspace_preload", cancel)
+        monkeypatch.setattr(server, "schedule_workspace_preload", schedule)
 
         result = await restart_server()
 
         assert fake_vtsls.restart_count == 1
         assert fake_daemon.restart_count == 1
-        assert preload_calls == [fake_vtsls]
+        assert cancel_calls == 1
+        assert schedule_calls == [(fake_vtsls, None, "restart")]
         assert server.current_diagnostics == {}
         assert server.pending_diagnostics_events == {}
         assert server.loaded_project_configs == set()
         assert server.project_file_configs == {}
-        assert "restarted successfully" in result
+        assert "workspace preload is running in the background" in result
     finally:
         server.vtsls = None
         server.current_diagnostics.clear()
@@ -229,6 +259,47 @@ async def test_lifespan_shuts_down_vtsls_when_daemon_start_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_schedules_preload_without_blocking(monkeypatch):
+    with tempfile.TemporaryDirectory() as project_tmp:
+        server._project_root = Path(project_tmp)
+        FakeVtslsLifecycle.instances = []
+        SuccessfulDaemonLifecycle.instances = []
+        preload_started = asyncio.Event()
+        preload_cancelled = asyncio.Event()
+        release_preload = asyncio.Event()
+
+        async def slow_preload(client, project_root=None):
+            preload_started.set()
+            try:
+                await release_preload.wait()
+            except asyncio.CancelledError:
+                preload_cancelled.set()
+                raise
+            return server.WorkspacePreloadStats()
+
+        monkeypatch.setattr(server, "VtslsClient", FakeVtslsLifecycle)
+        monkeypatch.setattr(server, "FormatterLinterDaemon", SuccessfulDaemonLifecycle)
+        monkeypatch.setattr(server, "preload_workspace_projects", slow_preload)
+        try:
+            async with server.lifespan(None):  # type: ignore[arg-type]
+                await asyncio.wait_for(preload_started.wait(), timeout=1)
+                assert SuccessfulDaemonLifecycle.instances[0].start_called is True
+                assert server.workspace_preload_state.status == "running"
+
+            assert preload_cancelled.is_set()
+            assert SuccessfulDaemonLifecycle.instances[0].shutdown_called is True
+            assert FakeVtslsLifecycle.instances[0].shutdown_called is True
+        finally:
+            release_preload.set()
+            await server.cancel_workspace_preload()
+            server._project_root = None
+            server.vtsls = None
+            server.daemon = None
+            server.clear_project_load_cache()
+            server.reset_workspace_preload_state()
+
+
+@pytest.mark.asyncio
 async def test_open_file_raises_when_disk_sync_fails(tmp_path):
     missing_file = tmp_path / "missing.ts"
 
@@ -238,6 +309,40 @@ async def test_open_file_raises_when_disk_sync_fails(tmp_path):
             missing_file,
             missing_file.as_uri(),
         )
+
+
+@pytest.mark.asyncio
+async def test_open_file_reference_counts_overlapping_handles(tmp_path):
+    source = tmp_path / "main.ts"
+    source.write_text("const value = 1;\n", encoding="utf-8")
+    uri = source.as_uri()
+    client = FakeTypeInfoClient()
+    server.document_states.clear()
+
+    await server.open_file(client, source, uri)
+    await server.open_file(client, source, uri)
+
+    assert [method for method, _params in client.notifications] == [
+        "textDocument/didOpen"
+    ]
+    assert server.document_states[uri].open_count == 2
+
+    await server.close_file(client, uri)
+
+    assert [method for method, _params in client.notifications] == [
+        "textDocument/didOpen"
+    ]
+    assert server.document_states[uri].is_open is True
+    assert server.document_states[uri].open_count == 1
+
+    await server.close_file(client, uri)
+
+    assert [method for method, _params in client.notifications] == [
+        "textDocument/didOpen",
+        "textDocument/didClose",
+    ]
+    assert server.document_states[uri].is_open is False
+    assert server.document_states[uri].open_count == 0
 
 
 @pytest.mark.asyncio

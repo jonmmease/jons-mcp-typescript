@@ -5,7 +5,7 @@ from typing import Any, get_type_hints
 
 import pytest
 
-from jons_mcp_typescript import semantic
+from jons_mcp_typescript import semantic, server
 from jons_mcp_typescript.schemas import (
     DocumentSymbolsResult,
     NavigationResult,
@@ -14,6 +14,7 @@ from jons_mcp_typescript.schemas import (
     TypeInfoResult,
 )
 from jons_mcp_typescript.tools import language
+from jons_mcp_typescript.workspace import WorkspacePreloadStats
 
 
 class FakeLanguageClient:
@@ -313,6 +314,59 @@ async def test_implementation_aggregates_reference_seeded_projects(
     assert external.as_uri() not in opened
     assert str(external) not in project_loads
     assert sorted(opened) == sorted(closed)
+
+
+@pytest.mark.asyncio
+async def test_semantic_tools_warn_while_workspace_preload_is_incomplete(
+    tool_project: Path,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, _opened, _closed, _ensure_calls, _project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    fake.responses["textDocument/references"] = [
+        {
+            "uri": source.as_uri(),
+            "range": {"start": {"line": 0, "character": 6}},
+        }
+    ]
+    fake.responses["textDocument/implementation"] = []
+    server.reset_workspace_preload_state()
+    server.workspace_preload_state.status = "running"
+    server.workspace_preload_state.stats = WorkspacePreloadStats(
+        discovered_projects=["packages/a/tsconfig.json"],
+    )
+    try:
+        references_result = await language.references(
+            "src/main.ts",
+            line=1,
+            character=7,
+        )
+        implementation_result = await language.implementation(
+            "src/main.ts",
+            line=1,
+            character=7,
+        )
+
+        assert references_result.warnings
+        assert "still running" in references_result.warnings[0]
+        assert implementation_result.warnings
+        assert "still running" in implementation_result.warnings[0]
+
+        server.workspace_preload_state.status = "complete"
+        server.workspace_preload_state.stats = WorkspacePreloadStats()
+        fake.responses["textDocument/references"] = []
+
+        complete_result = await language.references(
+            "src/main.ts",
+            line=1,
+            character=7,
+        )
+
+        assert complete_result.warnings is None
+    finally:
+        server.reset_workspace_preload_state()
 
 
 @pytest.mark.asyncio

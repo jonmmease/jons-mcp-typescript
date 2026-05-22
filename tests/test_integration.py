@@ -1465,10 +1465,14 @@ class TestMonorepoProjectReferences:
         server_state.document_states.clear()
         try:
             await client.start()
-            stats = await server_state.preload_workspace_projects(
+            preload_state = await server_state.schedule_workspace_preload(
                 client,
                 pnpm_monorepo_ts_project,
+                reason="test",
             )
+            assert preload_state.task is not None
+            await preload_state.task
+            stats = server_state.workspace_preload_state.stats
 
             assert stats.failures == {}
             assert set(stats.loaded_projects) == {
@@ -1530,6 +1534,7 @@ class TestMonorepoProjectReferences:
             server_state.vtsls = None
             server_state.document_states.clear()
             server_state.clear_project_load_cache()
+            server_state.reset_workspace_preload_state()
 
     @pytest.mark.integration
     @pytest.mark.asyncio

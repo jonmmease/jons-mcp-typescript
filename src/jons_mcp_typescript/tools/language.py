@@ -28,6 +28,7 @@ from ..server import (
     open_file,
     resolve_project_file,
     sync_open_file_content,
+    workspace_preload_warning,
 )
 from ..utils import (
     apply_pagination,
@@ -75,6 +76,20 @@ def _normalize_navigation_results(results: list[Any]) -> NavigationResult:
 
     items.sort(key=_navigation_sort_key)
     return NavigationResult.model_validate({"items": items, "totalItems": len(items)})
+
+
+def _with_navigation_warning(result: NavigationResult) -> NavigationResult:
+    warning = workspace_preload_warning()
+    if not warning:
+        return result
+    return result.model_copy(update={"warnings": [warning]})
+
+
+def _references_payload_with_warning(payload: dict[str, Any]) -> dict[str, Any]:
+    warning = workspace_preload_warning()
+    if warning:
+        payload["warnings"] = [warning]
+    return payload
 
 
 def _navigation_sort_key(item: dict[str, Any]) -> tuple[str, int, int]:
@@ -225,14 +240,16 @@ async def implementation(
     In monorepos, this aggregates semantic results across packages inside the
     configured project root. Start the MCP server at the monorepo root for
     cross-package results; package-root servers cannot inspect sibling packages
-    outside the security boundary.
+    outside the security boundary. The result includes warnings while workspace
+    project preload is incomplete and cross-package results may be partial.
 
     Args:
         file_path: Path to the TypeScript/JavaScript file
         line: One-based line number, matching editor/Read output.
         character: One-based column on that line.
 
-    Returns: NavigationResult with normalized target locations and one-based ranges.
+    Returns: NavigationResult with normalized target locations, one-based ranges,
+        and optional preload warnings.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -267,7 +284,7 @@ async def implementation(
                 await close_file(client, seed.uri)
             results.append(seed_result)
 
-        return _normalize_navigation_results(results)
+        return _with_navigation_warning(_normalize_navigation_results(results))
     finally:
         await close_file(client, file_uri)
 
@@ -293,6 +310,7 @@ async def references(
         offset: Number of results to skip
 
     Returns: ReferencesResult. Each item includes a file URI and one-based range.
+        The result includes warnings while workspace project preload is incomplete.
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
@@ -312,12 +330,16 @@ async def references(
         )
 
         if not result:
-            return ReferencesResult(
-                items=[],
-                totalItems=0,
-                offset=offset,
-                limit=limit,
-                hasMore=False,
+            return ReferencesResult.model_validate(
+                _references_payload_with_warning(
+                    {
+                        "items": [],
+                        "totalItems": 0,
+                        "offset": offset,
+                        "limit": limit,
+                        "hasMore": False,
+                    }
+                )
             )
 
         # Sort by location
@@ -326,7 +348,9 @@ async def references(
         # Apply pagination
         paginated, metadata = apply_pagination(sorted_items, offset, limit)
         return ReferencesResult.model_validate(
-            {"items": lsp_result_to_public(paginated), **metadata}
+            _references_payload_with_warning(
+                {"items": lsp_result_to_public(paginated), **metadata}
+            )
         )
     finally:
         await close_file(client, file_uri)

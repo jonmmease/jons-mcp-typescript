@@ -1,5 +1,6 @@
 """Workspace discovery and preloading behavior."""
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import pytest
 
 from jons_mcp_typescript import server
 from jons_mcp_typescript.workspace import (
+    WorkspacePreloadStats,
     discover_workspace_projects,
     find_representative_source,
 )
@@ -213,3 +215,82 @@ async def test_preload_workspace_projects_records_loaded_skipped_and_failures(
         tmp_path / "packages" / "loaded" / "src" / "index.ts",
     ]
     assert server.workspace_preload_stats == stats
+
+
+@pytest.mark.asyncio
+async def test_background_preload_transitions_to_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    expected = WorkspacePreloadStats(
+        discovered_projects=["packages/a/tsconfig.json"],
+        loaded_projects=["packages/a/tsconfig.json"],
+    )
+
+    async def preload(client: Any, project_root: Path | None = None) -> WorkspacePreloadStats:
+        return expected
+
+    monkeypatch.setattr(server, "preload_workspace_projects", preload)
+    server.reset_workspace_preload_state()
+    try:
+        state = await server.schedule_workspace_preload(object(), tmp_path)
+        assert state.status == "running"
+        assert state.task is not None
+
+        await state.task
+
+        assert server.workspace_preload_state.status == "complete"
+        assert server.workspace_preload_state.task is None
+        assert server.workspace_preload_state.stats == expected
+        assert server.workspace_preload_warning() is None
+    finally:
+        await server.cancel_workspace_preload()
+        server.reset_workspace_preload_state()
+
+
+@pytest.mark.asyncio
+async def test_background_preload_failure_and_cancellation_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def failing_preload(
+        client: Any, project_root: Path | None = None
+    ) -> WorkspacePreloadStats:
+        raise RuntimeError("workspace boom")
+
+    monkeypatch.setattr(server, "preload_workspace_projects", failing_preload)
+    server.reset_workspace_preload_state()
+    release: asyncio.Event | None = None
+    try:
+        failed_state = await server.schedule_workspace_preload(object(), tmp_path)
+        assert failed_state.task is not None
+        await failed_state.task
+
+        assert server.workspace_preload_state.status == "failed"
+        assert server.workspace_preload_state.error == "workspace boom"
+        assert "workspace boom" in (server.workspace_preload_warning() or "")
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_preload(
+            client: Any, project_root: Path | None = None
+        ) -> WorkspacePreloadStats:
+            started.set()
+            await release.wait()
+            return WorkspacePreloadStats()
+
+        monkeypatch.setattr(server, "preload_workspace_projects", slow_preload)
+        cancelled_state = await server.schedule_workspace_preload(object(), tmp_path)
+        assert cancelled_state.task is not None
+        await started.wait()
+
+        await server.cancel_workspace_preload()
+
+        assert server.workspace_preload_state.status == "cancelled"
+        assert "cancelled" in (server.workspace_preload_warning() or "")
+    finally:
+        if release:
+            release.set()
+        await server.cancel_workspace_preload()
+        server.reset_workspace_preload_state()

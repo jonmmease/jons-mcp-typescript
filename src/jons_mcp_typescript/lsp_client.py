@@ -689,6 +689,9 @@ class VtslsClient:
             result = await asyncio.wait_for(future, timeout=self.request_timeout)
             logger.debug(f"Got response for {method} (id={request_id})")
             return result
+        except asyncio.CancelledError:
+            self.pending_requests.pop(request_id, None)
+            raise
         except asyncio.TimeoutError:
             self.pending_requests.pop(request_id, None)
             logger.error(

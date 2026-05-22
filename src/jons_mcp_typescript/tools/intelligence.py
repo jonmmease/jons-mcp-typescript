@@ -100,7 +100,9 @@ async def preview_rename(
     In monorepos, this aggregates semantic rename edits across packages inside
     the configured project root. Start the MCP server at the monorepo root for
     cross-package rename previews; package-root servers cannot inspect or rename
-    sibling packages outside the security boundary.
+    sibling packages outside the security boundary. This tool returns an error
+    while workspace project preload is incomplete or failed, because partial
+    rename previews are unsafe.
 
     Returns a normalized preview with:
     - edits: Flat list of file edits to apply
@@ -121,6 +123,10 @@ async def preview_rename(
     """
     project_file = resolve_project_file(file_path)
     client = await ensure_vtsls_indexed(file_path)
+    rename_block = server_state.workspace_preload_blocks_rename()
+    if rename_block:
+        return RenamePreviewError(error=rename_block)
+
     file_uri = project_file.uri
     position = public_position_to_lsp(line, character)
     await open_file(client, project_file.path, file_uri)
@@ -307,14 +313,16 @@ async def restart_server(ctx: Context | None = None) -> str:
     """Restart TypeScript language server.
 
     Use this after making changes to tsconfig.json or when the server
-    seems to be in a bad state. This also reloads discovered workspace
-    projects for monorepo semantic navigation.
+    seems to be in a bad state. This also schedules discovered workspace
+    projects to reload in the background for monorepo semantic navigation.
 
     Returns: Status message
     """
     client = server_state.vtsls
     if not client:
         return "Error: TypeScript server not running"
+
+    await server_state.cancel_workspace_preload()
 
     # Clear all cached state
     current_diagnostics.clear()
@@ -324,8 +332,11 @@ async def restart_server(ctx: Context | None = None) -> str:
 
     # Restart the language server and daemon.
     await client.restart()
-    await server_state.preload_workspace_projects(client)
     daemon = get_daemon()
     await daemon.restart()
+    await server_state.schedule_workspace_preload(client, reason="restart")
 
-    return "TypeScript language server and formatter/linter daemon restarted successfully"
+    return (
+        "TypeScript server and daemon restarted; workspace preload is running "
+        "in the background."
+    )

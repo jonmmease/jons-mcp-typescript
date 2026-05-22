@@ -56,6 +56,7 @@ def tool_project(tmp_path: Path) -> Generator[Path, None, None]:
     server.current_diagnostics.clear()
     server.document_states.clear()
     server.pending_diagnostics_events.clear()
+    server.reset_workspace_preload_state()
     try:
         yield project_root
     finally:
@@ -65,3 +66,4 @@ def tool_project(tmp_path: Path) -> Generator[Path, None, None]:
         server.current_diagnostics.clear()
         server.document_states.clear()
         server.pending_diagnostics_events.clear()
+        server.reset_workspace_preload_state()

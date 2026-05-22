@@ -6,13 +6,14 @@ from typing import Any, get_type_hints
 
 import pytest
 
-from jons_mcp_typescript import semantic
+from jons_mcp_typescript import semantic, server
 from jons_mcp_typescript.schemas import (
     DiagnosticsResult,
     RenamePreviewError,
     RenamePreviewResult,
 )
 from jons_mcp_typescript.tools import intelligence
+from jons_mcp_typescript.workspace import WorkspacePreloadStats
 
 
 class FakeIntelligenceClient:
@@ -137,6 +138,39 @@ async def test_diagnostics_closes_file_when_wait_fails(
 
     assert sorted(opened) == sorted(closed)
     assert project_loads == []
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_blocks_while_workspace_preload_is_incomplete(
+    tool_project: Path,
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, ensure_calls, project_loads = harness
+    server.reset_workspace_preload_state()
+    server.workspace_preload_state.status = "running"
+    server.workspace_preload_state.stats = WorkspacePreloadStats(
+        discovered_projects=["packages/a/tsconfig.json"],
+    )
+    try:
+        result = await intelligence.preview_rename(
+            "src/main.ts",
+            line=1,
+            character=7,
+            new_name="renamed",
+        )
+
+        assert isinstance(result, RenamePreviewError)
+        assert "preview_rename is disabled" in result.error
+        assert ensure_calls == ["src/main.ts"]
+        assert fake.calls == []
+        assert opened == []
+        assert closed == []
+        assert project_loads == []
+    finally:
+        server.reset_workspace_preload_state()
+
 
 @pytest.mark.asyncio
 async def test_preview_rename_returns_error_when_prepare_rename_rejects(

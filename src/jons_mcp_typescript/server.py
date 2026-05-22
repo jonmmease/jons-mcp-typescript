@@ -7,9 +7,9 @@ import signal
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 
@@ -25,6 +25,14 @@ from .workspace import (
 
 logger = logging.getLogger(__name__)
 
+WorkspacePreloadStatus = Literal[
+    "not_started",
+    "running",
+    "complete",
+    "failed",
+    "cancelled",
+]
+
 
 @dataclass
 class DocumentState:
@@ -38,6 +46,19 @@ class DocumentState:
     version: int
     content_hash: str
     is_open: bool = False
+    open_count: int = 0
+
+
+@dataclass
+class WorkspacePreloadState:
+    """Track background workspace project preloading."""
+
+    status: WorkspacePreloadStatus = "not_started"
+    generation: int = 0
+    task: asyncio.Task[None] | None = None
+    stats: WorkspacePreloadStats = field(default_factory=WorkspacePreloadStats)
+    error: str | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +94,7 @@ _project_root: Path | None = None
 loaded_project_configs: set[str] = set()
 project_file_configs: dict[str, str] = {}
 workspace_preload_stats = WorkspacePreloadStats()
+workspace_preload_state = WorkspacePreloadState()
 
 
 def get_project_root() -> Path:
@@ -190,13 +212,144 @@ def clear_project_load_cache() -> None:
     project_file_configs.clear()
 
 
+def reset_workspace_preload_state() -> None:
+    """Reset workspace preload tracking when no preload task is active."""
+    global workspace_preload_stats, workspace_preload_state
+    workspace_preload_stats = WorkspacePreloadStats()
+    workspace_preload_state = WorkspacePreloadState()
+
+
+def _record_workspace_preload_stats(stats: WorkspacePreloadStats) -> None:
+    global workspace_preload_stats
+    workspace_preload_stats = stats
+    workspace_preload_state.stats = stats
+
+
+async def schedule_workspace_preload(
+    client: VtslsClient,
+    project_root: Path | None = None,
+    *,
+    reason: str = "startup",
+) -> WorkspacePreloadState:
+    """Schedule workspace project preload in the background."""
+    await cancel_workspace_preload()
+
+    root = (project_root or get_project_root()).expanduser().resolve(strict=True)
+    workspace_preload_state.generation += 1
+    generation = workspace_preload_state.generation
+    workspace_preload_state.status = "running"
+    workspace_preload_state.stats = WorkspacePreloadStats()
+    workspace_preload_state.error = None
+    workspace_preload_state.reason = reason
+    task = asyncio.create_task(
+        _run_workspace_preload(client, root, generation, reason),
+        name=f"workspace-preload-{generation}",
+    )
+    workspace_preload_state.task = task
+    logger.info("Scheduled workspace project preload in the background (%s)", reason)
+    return workspace_preload_state
+
+
+async def cancel_workspace_preload() -> None:
+    """Cancel and await the active workspace preload task, if present."""
+    task = workspace_preload_state.task
+    if not task:
+        return
+
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    workspace_preload_state.task = None
+
+
+def workspace_preload_warning() -> str | None:
+    """Return a warning when cross-package semantic coverage may be incomplete."""
+    state = workspace_preload_state
+    stats = state.stats
+    if state.status == "running":
+        loaded = len(stats.loaded_projects)
+        discovered = len(stats.discovered_projects)
+        progress = (
+            f" ({loaded}/{discovered} projects loaded)"
+            if discovered
+            else ""
+        )
+        return (
+            "Workspace project preload is still running"
+            f"{progress}; cross-package semantic results may be incomplete."
+        )
+    if state.status == "failed":
+        detail = f": {state.error}" if state.error else ""
+        return (
+            "Workspace project preload failed"
+            f"{detail}; cross-package semantic results may be incomplete."
+        )
+    if state.status == "cancelled":
+        return (
+            "Workspace project preload was cancelled; cross-package semantic "
+            "results may be incomplete."
+        )
+    if state.status == "complete" and stats.failures:
+        return (
+            "Workspace project preload completed with "
+            f"{len(stats.failures)} project failure(s); cross-package semantic "
+            "results may be incomplete."
+        )
+    return None
+
+
+def workspace_preload_blocks_rename() -> str | None:
+    """Return an error string when preview_rename should not run."""
+    warning = workspace_preload_warning()
+    if not warning:
+        return None
+    return f"{warning} preview_rename is disabled until workspace preload completes successfully."
+
+
+async def _run_workspace_preload(
+    client: VtslsClient,
+    project_root: Path,
+    generation: int,
+    reason: str,
+) -> None:
+    try:
+        stats = await preload_workspace_projects(client, project_root)
+    except asyncio.CancelledError:
+        if workspace_preload_state.generation == generation:
+            workspace_preload_state.status = "cancelled"
+            workspace_preload_state.error = None
+        logger.info("Workspace project preload cancelled (%s)", reason)
+        raise
+    except Exception as exc:
+        if workspace_preload_state.generation == generation:
+            workspace_preload_state.status = "failed"
+            workspace_preload_state.error = str(exc)
+        logger.warning("Workspace project preload failed (%s): %s", reason, exc)
+    else:
+        if workspace_preload_state.generation == generation:
+            workspace_preload_state.status = "complete"
+            workspace_preload_state.error = None
+            workspace_preload_state.stats = stats
+        logger.info(
+            "Workspace project preload complete (%s): %d loaded, %d skipped, %d failed",
+            reason,
+            len(stats.loaded_projects),
+            len(stats.skipped_projects),
+            len(stats.failures),
+        )
+    finally:
+        if workspace_preload_state.generation == generation:
+            workspace_preload_state.task = None
+
+
 async def preload_workspace_projects(
     client: VtslsClient,
     project_root: Path | None = None,
 ) -> WorkspacePreloadStats:
     """Best-effort preload of discovered workspace TypeScript projects."""
-    global workspace_preload_stats
-
     root = (project_root or get_project_root()).expanduser().resolve(strict=True)
     projects = discover_workspace_projects(root)
     stats = WorkspacePreloadStats(
@@ -205,6 +358,7 @@ async def preload_workspace_projects(
             for project in projects
         ]
     )
+    _record_workspace_preload_stats(stats)
 
     logger.info("Discovered %d TypeScript workspace projects", len(projects))
 
@@ -214,6 +368,7 @@ async def preload_workspace_projects(
         if representative is None:
             stats.skipped_projects[project_key] = "No representative source file found"
             logger.info("Skipping workspace project with no source file: %s", project_key)
+            _record_workspace_preload_stats(stats)
             continue
 
         file_uri = representative.as_uri()
@@ -224,7 +379,7 @@ async def preload_workspace_projects(
             finally:
                 await close_file(client, file_uri)
             stats.loaded_projects.append(project_key)
-            logger.info("Preloaded TypeScript workspace project: %s", project_key)
+            logger.debug("Preloaded TypeScript workspace project: %s", project_key)
         except Exception as exc:
             stats.failures[project_key] = str(exc)
             logger.warning(
@@ -232,8 +387,9 @@ async def preload_workspace_projects(
                 project_key,
                 exc,
             )
+        _record_workspace_preload_stats(stats)
 
-    workspace_preload_stats = stats
+    _record_workspace_preload_stats(stats)
     return stats
 
 
@@ -372,7 +528,10 @@ async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -
                 },
             )
             document_states[file_uri] = DocumentState(
-                version=version, content_hash=content_hash, is_open=True
+                version=version,
+                content_hash=content_hash,
+                is_open=True,
+                open_count=1,
             )
             logger.debug(f"Opened new file in vtsls: {file_path} (v{version})")
 
@@ -389,11 +548,20 @@ async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -
                     },
                 )
                 document_states[file_uri] = DocumentState(
-                    version=version, content_hash=content_hash, is_open=True
+                    version=version,
+                    content_hash=content_hash,
+                    is_open=True,
+                    open_count=state.open_count + 1,
                 )
                 logger.debug(f"Synced changed file in vtsls: {file_path} (v{version})")
             else:
                 # Content unchanged - no notification needed
+                document_states[file_uri] = DocumentState(
+                    version=state.version,
+                    content_hash=state.content_hash,
+                    is_open=True,
+                    open_count=state.open_count + 1,
+                )
                 logger.debug(f"File unchanged, skipping sync: {file_path}")
 
         else:
@@ -416,7 +584,10 @@ async def open_file(client: VtslsClient, file_path: str | Path, file_uri: str) -
                 },
             )
             document_states[file_uri] = DocumentState(
-                version=version, content_hash=content_hash, is_open=True
+                version=version,
+                content_hash=content_hash,
+                is_open=True,
+                open_count=1,
             )
             logger.debug(f"Reopened file in vtsls: {file_path} (v{version})")
 
@@ -444,6 +615,7 @@ async def sync_open_file_content(
         version=version,
         content_hash=compute_content_hash(content),
         is_open=True,
+        open_count=state.open_count if state and state.is_open else 1,
     )
     return version
 
@@ -459,18 +631,37 @@ async def close_file(client: VtslsClient, file_uri: str) -> None:
         file_uri: URI of the file (file://<path>).
     """
     try:
+        state = document_states.get(file_uri)
+        if not state or not state.is_open:
+            logger.debug(f"File already closed in vtsls: {file_uri}")
+            return
+
+        next_open_count = max(state.open_count - 1, 0)
+        if next_open_count > 0:
+            document_states[file_uri] = DocumentState(
+                version=state.version,
+                content_hash=state.content_hash,
+                is_open=True,
+                open_count=next_open_count,
+            )
+            logger.debug(
+                "Deferred close for %s; %d remaining open handles",
+                file_uri,
+                next_open_count,
+            )
+            return
+
         await client.notify(
             "textDocument/didClose",
             {"textDocument": {"uri": file_uri}},
         )
         # Update state to mark as closed, but keep version/hash for next open
-        if file_uri in document_states:
-            state = document_states[file_uri]
-            document_states[file_uri] = DocumentState(
-                version=state.version,
-                content_hash=state.content_hash,
-                is_open=False,
-            )
+        document_states[file_uri] = DocumentState(
+            version=state.version,
+            content_hash=state.content_hash,
+            is_open=False,
+            open_count=0,
+        )
         logger.debug(f"Closed file in vtsls: {file_uri}")
     except Exception as e:
         logger.warning(f"Failed to close file {file_uri}: {e}")
@@ -510,18 +701,12 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
         # Start the vtsls client
         await vtsls.start()
 
-        # Preload workspace projects before user requests arrive.
-        await preload_workspace_projects(vtsls, project_root)
-
         # Start daemon for formatting and linting
         daemon = FormatterLinterDaemon.create(project_root)
         await daemon.start()
         logger.info("Formatter/Linter daemon started")
 
-        # Wait for initial analysis to complete
-        # This gives vtsls time to scan the project and generate initial diagnostics
-        logger.info("Waiting for initial TypeScript analysis...")
-        await asyncio.sleep(2.0)
+        await schedule_workspace_preload(vtsls, project_root, reason="startup")
 
         logger.info("MCP server initialization complete")
 
@@ -531,6 +716,8 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     finally:
         # Shutdown
         logger.info("Shutting down MCP server...")
+
+        await cancel_workspace_preload()
 
         # Shutdown daemon first
         if daemon:
@@ -564,9 +751,12 @@ is safe to call before deciding whether to apply edits. In monorepos,
 `implementation` and `preview_rename` aggregate semantic results across packages
 inside the configured project root after vtsls has loaded those package projects.
 This server auto-discovers `pnpm-workspace.yaml` and `package.json` workspaces
-and preloads package `tsconfig.json` projects. Start it at the monorepo root for
-cross-package results; if started inside one package, sibling packages stay
-outside the security boundary. `restart_server` reloads workspace projects after
+and preloads package `tsconfig.json` projects in the background. Start it at the
+monorepo root for cross-package results; if started inside one package, sibling
+packages stay outside the security boundary. While preload is incomplete,
+`references` and `implementation` may include a warning that cross-package
+results are incomplete, and `preview_rename` refuses to run until preload
+finishes successfully. `restart_server` schedules workspace preload after
 tsconfig or workspace manifest changes.
 
 Use `symbol_info` for quick hover-style signature/type text and docs at a

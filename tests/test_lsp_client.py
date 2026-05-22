@@ -345,6 +345,32 @@ class TestVtslsClientTimeout:
                     # Verify the pending request was cleaned up
                     assert 0 not in client.pending_requests
 
+    @pytest.mark.asyncio
+    async def test_request_cancellation_cleans_up_pending(self):
+        """Test that cancelled requests are cleaned from pending."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            (project_root / "package.json").write_text('{"name": "test"}')
+
+            with patch.object(VtslsClient, "_find_vtsls", return_value="vtsls"):
+                client = VtslsClient(project_root)
+                client.request_timeout = 60
+                client.process = MagicMock()
+                client.process.stdin = MagicMock()
+                client._loop = asyncio.get_running_loop()
+
+                with patch.object(client, "_send_message", new_callable=AsyncMock):
+                    task = asyncio.create_task(client.request("test/method", {}))
+                    await asyncio.sleep(0)
+
+                    assert 0 in client.pending_requests
+
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+
+                    assert 0 not in client.pending_requests
+
 
 class TestVtslsClientWorkspaceConfiguration:
     """Test suite for workspace configuration handling."""

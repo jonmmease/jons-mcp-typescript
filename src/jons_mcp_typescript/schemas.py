@@ -61,6 +61,7 @@ class NavigationResult(BaseModel):
 
     items: list[NavigationLocation]
     totalItems: int = Field(..., ge=0)
+    warnings: list[str] | None = None
 
 
 class PaginatedResult(BaseModel, Generic[T]):
@@ -116,6 +117,8 @@ class PublicLocationItem(PublicLocation):
 
 class ReferencesResult(PaginatedResult[PublicLocationItem]):
     """Result returned by references."""
+
+    warnings: list[str] | None = None
 
 
 class DiagnosticItem(BaseModel):
