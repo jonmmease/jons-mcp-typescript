@@ -185,7 +185,7 @@ def clear_project_load_cache() -> None:
     project_file_configs.clear()
 
 
-async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> None:
+async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> str:
     """Ask tsserver to load the configured project containing file_path.
 
     vtsls can answer project-wide requests before tsserver has fully loaded the
@@ -197,6 +197,9 @@ async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> N
         client: The initialized VtslsClient.
         file_path: Absolute path to an already opened/synced source file.
 
+    Returns:
+        The TypeScript config key for the project containing file_path.
+
     Raises:
         ProjectLoadError: If tsserver cannot report a usable project graph.
     """
@@ -204,7 +207,7 @@ async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> N
     path_key = str(path)
     cached_config = project_file_configs.get(path_key)
     if cached_config and cached_config in loaded_project_configs:
-        return
+        return cached_config
 
     try:
         response = await client.request(
@@ -247,9 +250,12 @@ async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> N
     if isinstance(file_names, list):
         for file_name in file_names:
             if isinstance(file_name, str):
-                project_file_configs[str(Path(file_name).resolve(strict=False))] = (
-                    config_key
+                project_file_configs.setdefault(
+                    str(Path(file_name).resolve(strict=False)),
+                    config_key,
                 )
+
+    return config_key
 
 
 def get_daemon() -> FormatterLinterDaemon:
@@ -499,7 +505,12 @@ fresh TypeScript diagnostics for one file.
 
 `preview_rename` returns `edits`, a flat list of file URI, one-based replacement
 range, and `newText` values, plus `totalEdits`. It does not write files, so it
-is safe to call before deciding whether to apply edits.
+is safe to call before deciding whether to apply edits. In monorepos,
+`implementation` and `preview_rename` aggregate semantic results across packages
+inside the configured project root. Start this server at the monorepo root for
+cross-package results; if started inside one package, sibling packages stay
+outside the security boundary. `references` may still report external locations,
+but follow-up aggregation only opens in-root files.
 
 Use `symbol_info` for quick hover-style signature/type text and docs at a
 position. Use `type_info_of_reference` when you need structured TypeScript

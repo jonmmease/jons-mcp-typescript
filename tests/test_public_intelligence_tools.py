@@ -6,6 +6,7 @@ from typing import Any, get_type_hints
 
 import pytest
 
+from jons_mcp_typescript import semantic
 from jons_mcp_typescript.schemas import (
     DiagnosticsResult,
     RenamePreviewError,
@@ -24,6 +25,8 @@ class FakeIntelligenceClient:
     async def request(self, method: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, params))
         response = self.responses.pop(0)
+        if callable(response):
+            response = response(method, params)
         if isinstance(response, Exception):
             raise response
         return response
@@ -56,13 +59,17 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     async def close_file(client: FakeIntelligenceClient, uri: str) -> None:
         closed.append(uri)
 
-    async def ensure_project_loaded(client: FakeIntelligenceClient, path: Path) -> None:
+    async def ensure_project_loaded(client: FakeIntelligenceClient, path: Path) -> str:
         project_loads.append(str(path))
+        return f"config:{path.name}"
 
     monkeypatch.setattr(intelligence, "ensure_vtsls_indexed", ensure)
     monkeypatch.setattr(intelligence, "ensure_project_loaded", ensure_project_loaded)
     monkeypatch.setattr(intelligence, "open_file", open_file)
     monkeypatch.setattr(intelligence, "close_file", close_file)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", ensure_project_loaded)
+    monkeypatch.setattr(semantic, "open_file", open_file)
+    monkeypatch.setattr(semantic, "close_file", close_file)
     return fake, opened, closed, ensure_calls, project_loads
 
 
@@ -107,7 +114,7 @@ async def test_diagnostics_sorts_paginates_and_closes(
     assert result_dict["hasMore"] is True
     assert ensure_calls == ["src/main.ts"]
     assert project_loads == []
-    assert opened == closed
+    assert sorted(opened) == sorted(closed)
 
 
 @pytest.mark.asyncio
@@ -128,7 +135,7 @@ async def test_diagnostics_closes_file_when_wait_fails(
     with pytest.raises(RuntimeError, match="diagnostics failed"):
         await intelligence.diagnostics("src/main.ts")
 
-    assert opened == closed
+    assert sorted(opened) == sorted(closed)
     assert project_loads == []
 
 @pytest.mark.asyncio
@@ -152,7 +159,7 @@ async def test_preview_rename_returns_error_when_prepare_rename_rejects(
     assert result == RenamePreviewError(error="Symbol cannot be renamed")
     assert project_loads == [str(source)]
     assert [call[0] for call in fake.calls] == ["textDocument/prepareRename"]
-    assert opened == closed
+    assert sorted(opened) == sorted(closed)
 
 
 @pytest.mark.asyncio
@@ -199,7 +206,7 @@ async def test_preview_rename_normalizes_edit_shapes(
 ):
     fake, opened, closed, _ensure_calls, project_loads = harness
     source = tool_project / "src" / "main.ts"
-    fake.responses = [RuntimeError("unsupported"), edit]
+    fake.responses = [RuntimeError("unsupported"), edit, []]
 
     result = await intelligence.preview_rename(
         "src/main.ts",
@@ -226,8 +233,9 @@ async def test_preview_rename_normalizes_edit_shapes(
     assert [call[0] for call in fake.calls] == [
         "textDocument/prepareRename",
         "textDocument/rename",
+        "textDocument/references",
     ]
-    assert opened == closed
+    assert sorted(opened) == sorted(closed)
 
 
 @pytest.mark.parametrize(
@@ -262,4 +270,166 @@ async def test_preview_rename_normalizes_failed_results(
     assert isinstance(result, RenamePreviewError)
     assert result.model_dump() == expected
     assert project_loads == [str(source)]
-    assert opened == closed
+    assert sorted(opened) == sorted(closed)
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_aggregates_reference_seeded_project_edits(
+    tool_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    alias = tool_project / "src" / "alias.ts"
+    server_a = tool_project / "src" / "server_a.ts"
+    server_b = tool_project / "src" / "server_b.ts"
+    external = tmp_path / "external.ts"
+    for path in (alias, server_a, server_b, external):
+        path.write_text("export const value = 1;\n", encoding="utf-8")
+
+    async def grouped_project_load(client: FakeIntelligenceClient, path: Path) -> str:
+        project_loads.append(str(path))
+        if path.name.startswith("server_"):
+            return "server-config"
+        return "main-config"
+
+    monkeypatch.setattr(intelligence, "ensure_project_loaded", grouped_project_load)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", grouped_project_load)
+
+    def edit(uri: str, line: int, character: int) -> dict[str, Any]:
+        return {
+            "changes": {
+                uri: [
+                    {
+                        "range": {
+                            "start": {"line": line, "character": character},
+                            "end": {"line": line, "character": character + 5},
+                        },
+                        "newText": "renamed",
+                    }
+                ]
+            }
+        }
+
+    direct_edit = {
+        "changes": {
+            source.as_uri(): edit(source.as_uri(), 0, 6)["changes"][source.as_uri()],
+            alias.as_uri(): edit(alias.as_uri(), 0, 9)["changes"][alias.as_uri()],
+        }
+    }
+    seed_edit = {
+        "changes": {
+            server_a.as_uri(): edit(server_a.as_uri(), 1, 2)["changes"][
+                server_a.as_uri()
+            ],
+            source.as_uri(): edit(source.as_uri(), 0, 6)["changes"][source.as_uri()],
+        }
+    }
+    fake.responses = [
+        {"range": {}},
+        direct_edit,
+        [
+            {
+                "uri": source.as_uri(),
+                "range": {"start": {"line": 0, "character": 6}},
+            },
+            {"uri": alias.as_uri(), "range": {"start": {"line": 0, "character": 9}}},
+            {
+                "uri": server_a.as_uri(),
+                "range": {"start": {"line": 1, "character": 2}},
+            },
+            {
+                "uri": server_b.as_uri(),
+                "range": {"start": {"line": 1, "character": 2}},
+            },
+            {
+                "uri": external.as_uri(),
+                "range": {"start": {"line": 1, "character": 2}},
+            },
+        ],
+        seed_edit,
+    ]
+
+    result = await intelligence.preview_rename(
+        "src/main.ts",
+        line=1,
+        character=7,
+        new_name="renamed",
+    )
+
+    assert isinstance(result, RenamePreviewResult)
+    result_dict = result.model_dump()
+    assert {edit["uri"] for edit in result_dict["edits"]} == {
+        source.as_uri(),
+        alias.as_uri(),
+        server_a.as_uri(),
+    }
+    assert result_dict["totalEdits"] == 3
+    rename_uris = [
+        params["textDocument"]["uri"]
+        for method, params in fake.calls
+        if method == "textDocument/rename"
+    ]
+    assert rename_uris == [source.as_uri(), server_a.as_uri()]
+    assert external.as_uri() not in opened
+    assert str(external) not in project_loads
+    assert sorted(opened) == sorted(closed)
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_returns_error_for_bad_aggregation_result(
+    tool_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: tuple[
+        FakeIntelligenceClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    server_file = tool_project / "src" / "server.ts"
+    server_file.write_text("export const value = 1;\n", encoding="utf-8")
+
+    async def grouped_project_load(client: FakeIntelligenceClient, path: Path) -> str:
+        project_loads.append(str(path))
+        return "server-config" if path.name == "server.ts" else "main-config"
+
+    monkeypatch.setattr(intelligence, "ensure_project_loaded", grouped_project_load)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", grouped_project_load)
+
+    fake.responses = [
+        {"range": {}},
+        {
+            "changes": {
+                source.as_uri(): [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 6},
+                            "end": {"line": 0, "character": 11},
+                        },
+                        "newText": "renamed",
+                    }
+                ]
+            }
+        },
+        [
+            {
+                "uri": server_file.as_uri(),
+                "range": {"start": {"line": 0, "character": 6}},
+            }
+        ],
+        {"unexpected": []},
+    ]
+
+    result = await intelligence.preview_rename(
+        "src/main.ts",
+        line=1,
+        character=7,
+        new_name="renamed",
+    )
+
+    assert result == RenamePreviewError(error="Rename returned unsupported edit shape")
+    assert sorted(opened) == sorted(closed)

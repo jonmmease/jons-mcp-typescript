@@ -27,6 +27,7 @@ from jons_mcp_typescript import server as server_state
 from jons_mcp_typescript.daemon_client import FormatterLinterDaemon
 from jons_mcp_typescript.exceptions import (
     DaemonError,
+    ProjectLoadError,
     VtslsNotFoundError,
 )
 from jons_mcp_typescript.lsp_client import VtslsClient
@@ -42,6 +43,7 @@ from jons_mcp_typescript.server import (
     wait_for_diagnostics,
 )
 from jons_mcp_typescript.tools import intelligence, language
+from jons_mcp_typescript.utils import path_from_file_uri
 
 # =============================================================================
 # Helpers to check for dependencies
@@ -207,6 +209,34 @@ def location_basenames(result: object) -> set[str]:
     return basenames
 
 
+def location_project_paths(result: object, project_root: Path) -> set[str]:
+    """Extract project-relative paths from normalized locations or raw LSP locations."""
+    project_root = project_root.resolve(strict=False)
+    if hasattr(result, "model_dump"):
+        result = result.model_dump(exclude_none=True)
+
+    if isinstance(result, dict) and isinstance(result.get("items"), list):
+        items = result["items"]
+    elif isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        items = [result]
+    else:
+        items = []
+
+    paths = set()
+    for item in items:
+        if isinstance(item, dict):
+            uri = item.get("targetUri") or item.get("uri")
+            if isinstance(uri, str):
+                path = path_from_file_uri(uri).resolve(strict=False)
+                try:
+                    paths.add(path.relative_to(project_root).as_posix())
+                except ValueError:
+                    paths.add(path.as_posix())
+    return paths
+
+
 def rename_preview_basenames(preview: object) -> set[str]:
     """Extract file basenames from a normalized rename preview."""
     if hasattr(preview, "model_dump"):
@@ -223,6 +253,42 @@ def rename_preview_basenames(preview: object) -> set[str]:
                 if isinstance(uri, str):
                     basenames.add(Path(uri.removeprefix("file://")).name)
     return basenames
+
+
+def rename_preview_project_paths(preview: object, project_root: Path) -> set[str]:
+    """Extract project-relative paths from a normalized rename preview."""
+    project_root = project_root.resolve(strict=False)
+    if hasattr(preview, "model_dump"):
+        preview = preview.model_dump()
+    if not isinstance(preview, dict):
+        return set()
+
+    paths = set()
+    edits = preview.get("edits", [])
+    if isinstance(edits, list):
+        for edit in edits:
+            if isinstance(edit, dict):
+                uri = edit.get("uri")
+                if isinstance(uri, str):
+                    path = path_from_file_uri(uri).resolve(strict=False)
+                    try:
+                        paths.add(path.relative_to(project_root).as_posix())
+                    except ValueError:
+                        paths.add(path.as_posix())
+    return paths
+
+
+def assert_monorepo_paths_include(
+    actual: set[str],
+    expected: set[str],
+    tool_name: str,
+) -> None:
+    """Assert desired monorepo coverage with observed paths in the failure."""
+    missing = expected - actual
+    assert not missing, (
+        f"{tool_name} did not include all referenced-package files; "
+        f"missing={sorted(missing)}, actual={sorted(actual)}"
+    )
 
 
 # =============================================================================
@@ -377,6 +443,139 @@ export class ImplB implements Service {
 """,
             encoding="utf-8",
         )
+        yield project_root
+
+
+@pytest.fixture
+def monorepo_ts_project() -> Generator[Path, None, None]:
+    """Create a referenced-package monorepo for cross-project LSP probes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        (project_root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "monorepo-project",
+                    "version": "1.0.0",
+                    "private": True,
+                    "type": "module",
+                    "workspaces": ["packages/*"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (project_root / "tsconfig.json").write_text(
+            json.dumps(
+                {
+                    "files": [],
+                    "references": [
+                        {"path": "./packages/common"},
+                        {"path": "./packages/server"},
+                        {"path": "./packages/worker"},
+                    ],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        common_options = {
+            "composite": True,
+            "declaration": True,
+            "target": "ES2020",
+            "module": "ESNext",
+            "moduleResolution": "node",
+            "strict": True,
+            "rootDir": "src",
+            "outDir": "dist",
+            "skipLibCheck": True,
+        }
+        package_options = {
+            "composite": True,
+            "declaration": True,
+            "target": "ES2020",
+            "module": "ESNext",
+            "moduleResolution": "node",
+            "strict": True,
+            "baseUrl": ".",
+            "paths": {"@fixture/common": ["../common/src/index.ts"]},
+            "outDir": "dist",
+            "skipLibCheck": True,
+        }
+
+        for package_name in ("common", "server", "worker"):
+            package_dir = project_root / "packages" / package_name
+            (package_dir / "src").mkdir(parents=True)
+            tsconfig = {
+                "compilerOptions": (
+                    common_options
+                    if package_name == "common"
+                    else package_options
+                ),
+                "include": ["src/**/*"],
+            }
+            if package_name != "common":
+                tsconfig["references"] = [{"path": "../common"}]
+            (package_dir / "tsconfig.json").write_text(
+                json.dumps(tsconfig, indent=2),
+                encoding="utf-8",
+            )
+            (package_dir / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": f"@fixture/{package_name}",
+                        "version": "1.0.0",
+                        "type": "module",
+                        "exports": {"./package.json": "./package.json"},
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+        (project_root / "packages" / "common" / "src" / "errors.ts").write_text(
+            """export interface TraceIdError {
+  traceId: string;
+}
+
+export function createTraceIdError(message: string): TraceIdError {
+  return { traceId: `trace:${message}` };
+}
+""",
+            encoding="utf-8",
+        )
+        (project_root / "packages" / "common" / "src" / "index.ts").write_text(
+            """export { createTraceIdError, type TraceIdError } from "./errors";
+""",
+            encoding="utf-8",
+        )
+        (project_root / "packages" / "server" / "src" / "handler.ts").write_text(
+            """import { createTraceIdError, type TraceIdError } from "@fixture/common";
+
+export class ServerTraceError extends Error implements TraceIdError {
+  traceId = "server";
+}
+
+export function handleServer(): TraceIdError {
+  return createTraceIdError("server");
+}
+""",
+            encoding="utf-8",
+        )
+        (project_root / "packages" / "worker" / "src" / "worker.ts").write_text(
+            """import { createTraceIdError, type TraceIdError } from "@fixture/common";
+
+export class WorkerTraceError extends Error implements TraceIdError {
+  traceId = "worker";
+}
+
+export function handleWorker(): TraceIdError {
+  return createTraceIdError("worker");
+}
+""",
+            encoding="utf-8",
+        )
+
         yield project_root
 
 
@@ -1192,6 +1391,203 @@ class TestProjectGraphReadiness:
                 "b.ts",
                 "types.ts",
             }
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+
+@pytest.mark.skipif(not VTSLS_AVAILABLE, reason="vtsls not available")
+class TestMonorepoProjectReferences:
+    """Characterize public tool behavior across referenced package projects."""
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_monorepo_references_include_unopened_package_callers(
+        self, monorepo_ts_project: Path
+    ):
+        client = VtslsClient(monorepo_ts_project)
+        server_state._project_root = monorepo_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            common_text = (
+                monorepo_ts_project / "packages" / "common" / "src" / "errors.ts"
+            ).read_text()
+            result = await language.references(
+                "packages/common/src/errors.ts",
+                include_declaration=True,
+                **position_of(common_text, "createTraceIdError"),
+            )
+
+            actual = location_project_paths(result, monorepo_ts_project)
+            assert_monorepo_paths_include(
+                actual,
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "references",
+            )
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_monorepo_implementation_includes_unopened_package_implementors(
+        self, monorepo_ts_project: Path
+    ):
+        client = VtslsClient(monorepo_ts_project)
+        server_state._project_root = monorepo_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            common_text = (
+                monorepo_ts_project / "packages" / "common" / "src" / "errors.ts"
+            ).read_text()
+            result = await language.implementation(
+                "packages/common/src/errors.ts",
+                **position_of(common_text, "TraceIdError"),
+            )
+
+            actual = location_project_paths(result, monorepo_ts_project)
+            assert_monorepo_paths_include(
+                actual,
+                {
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "implementation",
+            )
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_monorepo_preview_rename_includes_unopened_package_callers(
+        self, monorepo_ts_project: Path
+    ):
+        client = VtslsClient(monorepo_ts_project)
+        server_state._project_root = monorepo_ts_project
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            common_text = (
+                monorepo_ts_project / "packages" / "common" / "src" / "errors.ts"
+            ).read_text()
+            result = await intelligence.preview_rename(
+                "packages/common/src/errors.ts",
+                new_name="createRenamedTraceIdError",
+                **position_of(common_text, "createTraceIdError"),
+            )
+
+            actual = rename_preview_project_paths(result, monorepo_ts_project)
+            assert_monorepo_paths_include(
+                actual,
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "preview_rename",
+            )
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_monorepo_package_root_references_include_workspace_callers(
+        self, monorepo_ts_project: Path
+    ):
+        package_root = monorepo_ts_project / "packages" / "server"
+        client = VtslsClient(package_root)
+        server_state._project_root = package_root
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            server_text = (package_root / "src" / "handler.ts").read_text()
+            try:
+                result = await language.references(
+                    "src/handler.ts",
+                    include_declaration=True,
+                    **position_of(server_text, "createTraceIdError", occurrence=2),
+                )
+            except ProjectLoadError as exc:
+                pytest.xfail(f"package-root projectInfo failed: {exc}")
+
+            actual = location_project_paths(result, monorepo_ts_project)
+            assert_monorepo_paths_include(
+                actual,
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "references from package cwd",
+            )
+        finally:
+            await client.shutdown()
+            server_state._project_root = None
+            server_state.vtsls = None
+            server_state.document_states.clear()
+            server_state.clear_project_load_cache()
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_monorepo_package_root_preview_rename_includes_workspace_callers(
+        self, monorepo_ts_project: Path
+    ):
+        package_root = monorepo_ts_project / "packages" / "server"
+        client = VtslsClient(package_root)
+        server_state._project_root = package_root
+        server_state.vtsls = client
+        server_state.clear_project_load_cache()
+        server_state.document_states.clear()
+        try:
+            await client.start()
+
+            server_text = (package_root / "src" / "handler.ts").read_text()
+            try:
+                result = await intelligence.preview_rename(
+                    "src/handler.ts",
+                    new_name="createServerScopedTraceIdError",
+                    **position_of(server_text, "createTraceIdError", occurrence=2),
+                )
+            except ProjectLoadError as exc:
+                pytest.xfail(f"package-root projectInfo failed: {exc}")
+
+            actual = rename_preview_project_paths(result, monorepo_ts_project)
+            assert actual == {"packages/server/src/handler.ts"}
         finally:
             await client.shutdown()
             server_state._project_root = None

@@ -129,6 +129,8 @@ class FakeProjectInfoClient:
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, params))
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -252,8 +254,12 @@ async def test_ensure_project_loaded_requests_project_info_and_caches(tmp_path):
 
     server.clear_project_load_cache()
     try:
-        await server.ensure_project_loaded(client, source)  # type: ignore[arg-type]
-        await server.ensure_project_loaded(client, sibling)  # type: ignore[arg-type]
+        first_config = await server.ensure_project_loaded(
+            client, source  # type: ignore[arg-type]
+        )
+        second_config = await server.ensure_project_loaded(
+            client, sibling  # type: ignore[arg-type]
+        )
 
         assert client.calls == [
             (
@@ -267,9 +273,66 @@ async def test_ensure_project_loaded_requests_project_info_and_caches(tmp_path):
                 },
             )
         ]
+        assert first_config == str(config)
+        assert second_config == str(config)
         assert server.loaded_project_configs == {str(config)}
         assert server.project_file_configs[str(source.resolve())] == str(config)
         assert server.project_file_configs[str(sibling.resolve())] == str(config)
+    finally:
+        server.clear_project_load_cache()
+
+
+@pytest.mark.asyncio
+async def test_ensure_project_loaded_preserves_original_file_config(tmp_path):
+    common_source = tmp_path / "packages" / "common" / "src" / "main.ts"
+    server_source = tmp_path / "packages" / "server" / "src" / "main.ts"
+    common_source.parent.mkdir(parents=True)
+    server_source.parent.mkdir(parents=True)
+    common_source.write_text("export const value = 1;", encoding="utf-8")
+    server_source.write_text("export const serverValue = 2;", encoding="utf-8")
+    common_config = tmp_path / "packages" / "common" / "tsconfig.json"
+    server_config = tmp_path / "packages" / "server" / "tsconfig.json"
+    common_config.write_text("{}", encoding="utf-8")
+    server_config.write_text("{}", encoding="utf-8")
+
+    client = FakeProjectInfoClient(
+        [
+            {
+                "success": True,
+                "body": {
+                    "configFileName": str(common_config),
+                    "languageServiceDisabled": False,
+                    "fileNames": [str(common_source)],
+                },
+            },
+            {
+                "success": True,
+                "body": {
+                    "configFileName": str(server_config),
+                    "languageServiceDisabled": False,
+                    "fileNames": [str(server_source), str(common_source)],
+                },
+            },
+        ]
+    )
+
+    server.clear_project_load_cache()
+    try:
+        common_key = await server.ensure_project_loaded(
+            client, common_source  # type: ignore[arg-type]
+        )
+        server_key = await server.ensure_project_loaded(
+            client, server_source  # type: ignore[arg-type]
+        )
+
+        assert common_key == str(common_config)
+        assert server_key == str(server_config)
+        assert server.project_file_configs[str(common_source.resolve())] == str(
+            common_config
+        )
+        assert server.project_file_configs[str(server_source.resolve())] == str(
+            server_config
+        )
     finally:
         server.clear_project_load_cache()
 

@@ -5,6 +5,7 @@ from typing import Any, get_type_hints
 
 import pytest
 
+from jons_mcp_typescript import semantic
 from jons_mcp_typescript.schemas import (
     DocumentSymbolsResult,
     NavigationResult,
@@ -26,6 +27,8 @@ class FakeLanguageClient:
     async def request(self, method: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, params))
         response = self.responses.get(method)
+        if callable(response):
+            response = response(method, params)
         if isinstance(response, Exception):
             raise response
         return response
@@ -52,13 +55,17 @@ def harness(monkeypatch: pytest.MonkeyPatch):
     async def close_file(client: FakeLanguageClient, uri: str) -> None:
         closed.append(uri)
 
-    async def ensure_project_loaded(client: FakeLanguageClient, path: Path) -> None:
+    async def ensure_project_loaded(client: FakeLanguageClient, path: Path) -> str:
         project_loads.append(str(path))
+        return f"config:{path.name}"
 
     monkeypatch.setattr(language, "ensure_vtsls_indexed", ensure)
     monkeypatch.setattr(language, "ensure_project_loaded", ensure_project_loaded)
     monkeypatch.setattr(language, "open_file", open_file)
     monkeypatch.setattr(language, "close_file", close_file)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", ensure_project_loaded)
+    monkeypatch.setattr(semantic, "open_file", open_file)
+    monkeypatch.setattr(semantic, "close_file", close_file)
     return fake, opened, closed, ensure_calls, project_loads
 
 
@@ -96,6 +103,7 @@ async def test_navigation_tools_open_request_and_close(
         "range": {"start": {"line": 2, "character": 4}},
     }
     fake.responses[lsp_method] = location
+    fake.responses["textDocument/references"] = []
 
     result = await tool("src/main.ts", line=2, character=3)
 
@@ -110,8 +118,8 @@ async def test_navigation_tools_open_request_and_close(
     }
     assert ensure_calls == ["src/main.ts"]
     assert project_loads == [str(source)]
-    assert opened == closed
-    assert fake.calls == [
+    assert sorted(opened) == sorted(closed)
+    expected_calls = [
         (
             lsp_method,
             {
@@ -120,6 +128,18 @@ async def test_navigation_tools_open_request_and_close(
             },
         )
     ]
+    if tool is language.implementation:
+        expected_calls.append(
+            (
+                "textDocument/references",
+                {
+                    "textDocument": {"uri": opened[0]},
+                    "position": {"line": 1, "character": 2},
+                    "context": {"includeDeclaration": True},
+                },
+            )
+        )
+    assert fake.calls == expected_calls
 
 
 @pytest.mark.parametrize(
@@ -220,6 +240,119 @@ async def test_navigation_tools_return_empty_result_for_missing_targets(
     result = await tool("src/main.ts", line=2, character=3)
 
     assert result == NavigationResult(items=[], totalItems=0)
+
+
+@pytest.mark.asyncio
+async def test_implementation_aggregates_reference_seeded_projects(
+    tool_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    alias = tool_project / "src" / "alias.ts"
+    server_a = tool_project / "src" / "server_a.ts"
+    server_b = tool_project / "src" / "server_b.ts"
+    external = tmp_path / "external.ts"
+    for path in (alias, server_a, server_b, external):
+        path.write_text("export const value = 1;\n", encoding="utf-8")
+
+    async def grouped_project_load(client: FakeLanguageClient, path: Path) -> str:
+        project_loads.append(str(path))
+        if path.name.startswith("server_"):
+            return "server-config"
+        return "main-config"
+
+    monkeypatch.setattr(language, "ensure_project_loaded", grouped_project_load)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", grouped_project_load)
+
+    main_location = {
+        "uri": source.as_uri(),
+        "range": {"start": {"line": 0, "character": 0}},
+    }
+    server_location = {
+        "uri": server_a.as_uri(),
+        "range": {"start": {"line": 2, "character": 4}},
+    }
+
+    def implementation_response(method: str, params: dict[str, Any]) -> Any:
+        uri = params["textDocument"]["uri"]
+        if uri == source.as_uri():
+            return [main_location]
+        if uri == server_a.as_uri():
+            return [server_location, main_location]
+        raise AssertionError(f"unexpected implementation seed: {uri}")
+
+    fake.responses["textDocument/implementation"] = implementation_response
+    fake.responses["textDocument/references"] = [
+        {"uri": source.as_uri(), "range": {"start": {"line": 0, "character": 6}}},
+        {"uri": alias.as_uri(), "range": {"start": {"line": 0, "character": 6}}},
+        {"uri": server_a.as_uri(), "range": {"start": {"line": 1, "character": 8}}},
+        {"uri": server_b.as_uri(), "range": {"start": {"line": 1, "character": 8}}},
+        {"uri": external.as_uri(), "range": {"start": {"line": 1, "character": 8}}},
+    ]
+
+    result = await language.implementation("src/main.ts", line=1, character=7)
+
+    result_dict = result.model_dump(exclude_none=True)
+    assert {(item["uri"], item["range"]["start"]["line"]) for item in result_dict["items"]} == {
+        (source.as_uri(), 1),
+        (server_a.as_uri(), 3),
+    }
+    assert result_dict["totalItems"] == 2
+
+    implementation_uris = [
+        params["textDocument"]["uri"]
+        for method, params in fake.calls
+        if method == "textDocument/implementation"
+    ]
+    assert implementation_uris == [source.as_uri(), server_a.as_uri()]
+    assert external.as_uri() not in opened
+    assert str(external) not in project_loads
+    assert sorted(opened) == sorted(closed)
+
+
+@pytest.mark.asyncio
+async def test_implementation_aggregation_errors_for_in_root_seed(
+    tool_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: tuple[
+        FakeLanguageClient, list[str], list[str], list[str | None], list[str]
+    ],
+):
+    fake, opened, closed, _ensure_calls, project_loads = harness
+    source = tool_project / "src" / "main.ts"
+    server_file = tool_project / "src" / "server.ts"
+    server_file.write_text("export const value = 1;\n", encoding="utf-8")
+
+    async def grouped_project_load(client: FakeLanguageClient, path: Path) -> str:
+        project_loads.append(str(path))
+        return "server-config" if path.name == "server.ts" else "main-config"
+
+    monkeypatch.setattr(language, "ensure_project_loaded", grouped_project_load)
+    monkeypatch.setattr(semantic, "ensure_project_loaded", grouped_project_load)
+
+    def implementation_response(method: str, params: dict[str, Any]) -> Any:
+        uri = params["textDocument"]["uri"]
+        if uri == source.as_uri():
+            return []
+        raise RuntimeError("seed boom")
+
+    fake.responses["textDocument/implementation"] = implementation_response
+    fake.responses["textDocument/references"] = [
+        {
+            "uri": server_file.as_uri(),
+            "range": {"start": {"line": 0, "character": 6}},
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="seed boom"):
+        await language.implementation("src/main.ts", line=1, character=7)
+
+    assert sorted(opened) == sorted(closed)
 
 
 @pytest.mark.asyncio

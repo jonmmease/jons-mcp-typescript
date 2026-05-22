@@ -13,6 +13,7 @@ from ..schemas import (
     RenamePreviewError,
     RenamePreviewResult,
 )
+from ..semantic import reference_seeds_by_project
 from ..server import (
     clear_diagnostics_for_uri,
     close_file,
@@ -96,6 +97,11 @@ async def preview_rename(
 ) -> RenamePreviewResult | RenamePreviewError:
     """Preview a symbol rename across the project without writing files.
 
+    In monorepos, this aggregates semantic rename edits across packages inside
+    the configured project root. Start the MCP server at the monorepo root for
+    cross-package rename previews; package-root servers cannot inspect or rename
+    sibling packages outside the security boundary.
+
     Returns a normalized preview with:
     - edits: Flat list of file edits to apply
     - edits[].uri: File URI to edit
@@ -120,7 +126,7 @@ async def preview_rename(
     await open_file(client, project_file.path, file_uri)
 
     try:
-        await ensure_project_loaded(client, project_file.path)
+        origin_config = await ensure_project_loaded(client, project_file.path)
 
         # Optional: Validate rename is possible
         try:
@@ -154,11 +160,78 @@ async def preview_rename(
             return RenamePreviewError(error="Rename failed")
 
         try:
-            return _normalize_rename_preview(result)
+            rename_previews = [_normalize_rename_preview(result)]
         except (TypeError, ValidationError):
             return RenamePreviewError(error="Rename returned unsupported edit shape")
+
+        for seed in await reference_seeds_by_project(client, file_uri, position):
+            if seed.config_key == origin_config:
+                continue
+            await open_file(client, seed.path, seed.uri)
+            try:
+                seed_result = await client.request(
+                    "textDocument/rename",
+                    {
+                        "textDocument": {"uri": seed.uri},
+                        "position": seed.position,
+                        "newName": new_name,
+                    },
+                )
+            except Exception as exc:
+                return RenamePreviewError(error=f"Rename aggregation failed: {exc}")
+            finally:
+                await close_file(client, seed.uri)
+
+            if not seed_result or not isinstance(seed_result, dict):
+                return RenamePreviewError(error="Rename failed")
+
+            try:
+                rename_previews.append(_normalize_rename_preview(seed_result))
+            except (TypeError, ValidationError):
+                return RenamePreviewError(
+                    error="Rename returned unsupported edit shape"
+                )
+
+        return _merge_rename_previews(rename_previews)
     finally:
         await close_file(client, file_uri)
+
+
+def _merge_rename_previews(
+    previews: list[RenamePreviewResult],
+) -> RenamePreviewResult:
+    edits_by_key: dict[tuple[str, int, int, int | None, int | None, str], RenamePreviewEdit] = {}
+    for preview in previews:
+        for edit in preview.edits:
+            edits_by_key.setdefault(_rename_edit_key(edit), edit)
+
+    edits = sorted(
+        edits_by_key.values(),
+        key=lambda edit: (
+            edit.uri,
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line if edit.range.end else edit.range.start.line,
+            edit.range.end.character
+            if edit.range.end
+            else edit.range.start.character,
+            edit.newText,
+        ),
+    )
+    return RenamePreviewResult(edits=edits, totalEdits=len(edits))
+
+
+def _rename_edit_key(
+    edit: RenamePreviewEdit,
+) -> tuple[str, int, int, int | None, int | None, str]:
+    return (
+        edit.uri,
+        edit.range.start.line,
+        edit.range.start.character,
+        edit.range.end.line if edit.range.end else None,
+        edit.range.end.character if edit.range.end else None,
+        edit.newText,
+    )
 
 
 def _normalize_rename_preview(result: dict[str, Any]) -> RenamePreviewResult:

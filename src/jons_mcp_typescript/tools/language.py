@@ -19,6 +19,7 @@ from ..schemas import (
     SymbolInfoResult,
     TypeInfoResult,
 )
+from ..semantic import navigation_item_key, reference_seeds_by_project
 from ..server import (
     close_file,
     ensure_project_loaded,
@@ -50,18 +51,38 @@ def _normalize_navigation_result(result: Any) -> NavigationResult:
         if item is None:
             continue
 
-        key = (
-            item["uri"],
-            repr(item.get("range")),
-            repr(item.get("fullRange")),
-            repr(item.get("originRange")),
-        )
+        key = navigation_item_key(item)
         if key in seen:
             continue
         seen.add(key)
         items.append(item)
 
     return NavigationResult.model_validate({"items": items, "totalItems": len(items)})
+
+
+def _normalize_navigation_results(results: list[Any]) -> NavigationResult:
+    """Normalize, sort, and dedupe multiple navigation result payloads."""
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for result in results:
+        normalized = _normalize_navigation_result(result)
+        for item in normalized.model_dump(exclude_none=True)["items"]:
+            key = navigation_item_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+
+    items.sort(key=_navigation_sort_key)
+    return NavigationResult.model_validate({"items": items, "totalItems": len(items)})
+
+
+def _navigation_sort_key(item: dict[str, Any]) -> tuple[str, int, int]:
+    range_obj = item.get("range") if isinstance(item.get("range"), dict) else {}
+    start = range_obj.get("start", {}) if isinstance(range_obj, dict) else {}
+    line = start.get("line", 0) if isinstance(start, dict) else 0
+    character = start.get("character", 0) if isinstance(start, dict) else 0
+    return (str(item.get("uri", "")), line, character)
 
 
 def _normalize_navigation_item(raw_item: Any) -> dict[str, Any] | None:
@@ -201,6 +222,11 @@ async def implementation(
 ) -> NavigationResult:
     """Find implementations of interfaces or abstract classes.
 
+    In monorepos, this aggregates semantic results across packages inside the
+    configured project root. Start the MCP server at the monorepo root for
+    cross-package results; package-root servers cannot inspect sibling packages
+    outside the security boundary.
+
     Args:
         file_path: Path to the TypeScript/JavaScript file
         line: One-based line number, matching editor/Read output.
@@ -215,7 +241,7 @@ async def implementation(
     await open_file(client, project_file.path, file_uri)
 
     try:
-        await ensure_project_loaded(client, project_file.path)
+        origin_config = await ensure_project_loaded(client, project_file.path)
         result = await client.request(
             "textDocument/implementation",
             {
@@ -224,7 +250,24 @@ async def implementation(
             },
         )
 
-        return _normalize_navigation_result(result)
+        results = [result]
+        for seed in await reference_seeds_by_project(client, file_uri, position):
+            if seed.config_key == origin_config:
+                continue
+            await open_file(client, seed.path, seed.uri)
+            try:
+                seed_result = await client.request(
+                    "textDocument/implementation",
+                    {
+                        "textDocument": {"uri": seed.uri},
+                        "position": seed.position,
+                    },
+                )
+            finally:
+                await close_file(client, seed.uri)
+            results.append(seed_result)
+
+        return _normalize_navigation_results(results)
     finally:
         await close_file(client, file_uri)
 
