@@ -12,6 +12,7 @@ from ..schemas import (
     RenamePreviewEdit,
     RenamePreviewError,
     RenamePreviewResult,
+    WorkspaceStatusResult,
 )
 from ..semantic import reference_seeds_by_project
 from ..server import (
@@ -306,6 +307,23 @@ def _rename_edits_for_uri(
             )
         )
     return edits
+
+
+@mcp.tool()
+async def workspace_status(ctx: Context | None = None) -> WorkspaceStatusResult:
+    """Report workspace project preload status and failures.
+
+    Use this when `references` or `implementation` returns a
+    WORKSPACE_PRELOAD_INCOMPLETE warning, or when `preview_rename` refuses to
+    run because cross-package rename coverage is not safe yet. After fixing
+    workspace manifests or package tsconfig issues shown here, call
+    `restart_server` to rerun preload.
+
+    Returns: WorkspaceStatusResult with project counts, loaded projects,
+        skipped projects, failure details, selected representative files, loaded
+        config keys, and representative files held open for vtsls.
+    """
+    return WorkspaceStatusResult.model_validate(server_state.workspace_status_payload())
 
 
 @mcp.tool()

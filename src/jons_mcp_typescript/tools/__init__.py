@@ -34,13 +34,14 @@ Unified:
 
 Server Management:
     - restart_server: Restart TypeScript language server and daemon
+    - workspace_status: Report workspace project preload status and failures
 """
 
 from . import formatting, intelligence, language, linting, unified
 
 # Re-export all tools for convenient access
 from .formatting import check_formatting, format_code, get_prettier_config
-from .intelligence import diagnostics, preview_rename, restart_server
+from .intelligence import diagnostics, preview_rename, restart_server, workspace_status
 from .language import (
     definition,
     document_symbols,
@@ -79,6 +80,7 @@ __all__ = [
     "fix_all",
     # Server
     "restart_server",
+    "workspace_status",
     # Modules
     "formatting",
     "intelligence",

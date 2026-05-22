@@ -54,6 +54,24 @@ class NavigationLocation(BaseModel):
     )
 
 
+class WorkspaceWarning(BaseModel):
+    """Structured warning for potentially incomplete workspace semantic results."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(..., description="Stable warning code.")
+    message: str = Field(..., description="Human-readable warning message.")
+    status: str = Field(..., description="Current workspace preload status.")
+    loadedProjects: int = Field(..., ge=0)
+    totalProjects: int = Field(..., ge=0)
+    failedProjects: int = Field(..., ge=0)
+    skippedProjects: int = Field(..., ge=0)
+    detailsTool: str = Field(
+        default="workspace_status",
+        description="Tool that returns full workspace preload details.",
+    )
+
+
 class NavigationResult(BaseModel):
     """Result returned by definition, type_definition, and implementation."""
 
@@ -61,7 +79,7 @@ class NavigationResult(BaseModel):
 
     items: list[NavigationLocation]
     totalItems: int = Field(..., ge=0)
-    warnings: list[str] | None = None
+    warnings: list[WorkspaceWarning] | None = None
 
 
 class PaginatedResult(BaseModel, Generic[T]):
@@ -118,7 +136,39 @@ class PublicLocationItem(PublicLocation):
 class ReferencesResult(PaginatedResult[PublicLocationItem]):
     """Result returned by references."""
 
-    warnings: list[str] | None = None
+    warnings: list[WorkspaceWarning] | None = None
+
+
+class WorkspaceStatusFailure(BaseModel):
+    """One failed workspace preload project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project: str
+    representativeFile: str | None = None
+    message: str
+
+
+class WorkspaceStatusResult(BaseModel):
+    """Workspace preload status returned by workspace_status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    generation: int = Field(..., ge=0)
+    reason: str | None = None
+    error: str | None = None
+    totalProjects: int = Field(..., ge=0)
+    loadedProjectCount: int = Field(..., ge=0)
+    skippedProjectCount: int = Field(..., ge=0)
+    failedProjectCount: int = Field(..., ge=0)
+    discoveredProjects: list[str]
+    loadedProjects: list[str]
+    skippedProjects: dict[str, str]
+    failures: list[WorkspaceStatusFailure]
+    representativeFiles: dict[str, str | None]
+    loadedConfigKeys: dict[str, str]
+    heldOpenRepresentativeUris: list[str]
 
 
 class DiagnosticItem(BaseModel):

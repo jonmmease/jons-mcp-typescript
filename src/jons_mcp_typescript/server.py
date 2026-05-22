@@ -59,6 +59,7 @@ class WorkspacePreloadState:
     stats: WorkspacePreloadStats = field(default_factory=WorkspacePreloadStats)
     error: str | None = None
     reason: str | None = None
+    open_file_uris: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -221,6 +222,7 @@ def reset_workspace_preload_state() -> None:
 
 def _record_workspace_preload_stats(stats: WorkspacePreloadStats) -> None:
     global workspace_preload_stats
+    stats.held_open_uris = sorted(workspace_preload_state.open_file_uris)
     workspace_preload_stats = stats
     workspace_preload_state.stats = stats
 
@@ -233,6 +235,7 @@ async def schedule_workspace_preload(
 ) -> WorkspacePreloadState:
     """Schedule workspace project preload in the background."""
     await cancel_workspace_preload()
+    await close_workspace_preload_files(client)
 
     root = (project_root or get_project_root()).expanduser().resolve(strict=True)
     workspace_preload_state.generation += 1
@@ -253,52 +256,77 @@ async def schedule_workspace_preload(
 async def cancel_workspace_preload() -> None:
     """Cancel and await the active workspace preload task, if present."""
     task = workspace_preload_state.task
-    if not task:
-        return
-
-    if not task.done():
+    if task and not task.done():
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
     workspace_preload_state.task = None
+    await close_workspace_preload_files()
 
 
-def workspace_preload_warning() -> str | None:
+async def close_workspace_preload_files(client: VtslsClient | None = None) -> None:
+    """Close files held open only to keep preloaded workspace projects active."""
+    close_client = client or vtsls
+    uris = sorted(workspace_preload_state.open_file_uris)
+    workspace_preload_state.open_file_uris.clear()
+    workspace_preload_state.stats.held_open_uris = []
+    workspace_preload_stats.held_open_uris = []
+    if not close_client:
+        return
+    for uri in uris:
+        await close_file(close_client, uri)
+
+
+def workspace_preload_warning() -> dict[str, Any] | None:
     """Return a warning when cross-package semantic coverage may be incomplete."""
     state = workspace_preload_state
     stats = state.stats
+    total = len(stats.discovered_projects)
+    loaded = len(stats.loaded_projects)
+    failed = len(stats.failures)
+    skipped = len(stats.skipped_projects)
+    message: str | None = None
     if state.status == "running":
-        loaded = len(stats.loaded_projects)
-        discovered = len(stats.discovered_projects)
         progress = (
-            f" ({loaded}/{discovered} projects loaded)"
-            if discovered
+            f" ({loaded}/{total} projects loaded)"
+            if total
             else ""
         )
-        return (
+        message = (
             "Workspace project preload is still running"
             f"{progress}; cross-package semantic results may be incomplete."
         )
-    if state.status == "failed":
+    elif state.status == "failed":
         detail = f": {state.error}" if state.error else ""
-        return (
+        message = (
             "Workspace project preload failed"
             f"{detail}; cross-package semantic results may be incomplete."
         )
-    if state.status == "cancelled":
-        return (
+    elif state.status == "cancelled":
+        message = (
             "Workspace project preload was cancelled; cross-package semantic "
             "results may be incomplete."
         )
-    if state.status == "complete" and stats.failures:
-        return (
+    elif state.status == "complete" and stats.failures:
+        message = (
             "Workspace project preload completed with "
             f"{len(stats.failures)} project failure(s); cross-package semantic "
-            "results may be incomplete."
+            "results may be incomplete. Call workspace_status for details."
         )
-    return None
+    if message is None:
+        return None
+    return {
+        "code": "WORKSPACE_PRELOAD_INCOMPLETE",
+        "message": message,
+        "status": state.status,
+        "loadedProjects": loaded,
+        "totalProjects": total,
+        "failedProjects": failed,
+        "skippedProjects": skipped,
+        "detailsTool": "workspace_status",
+    }
 
 
 def workspace_preload_blocks_rename() -> str | None:
@@ -306,7 +334,43 @@ def workspace_preload_blocks_rename() -> str | None:
     warning = workspace_preload_warning()
     if not warning:
         return None
-    return f"{warning} preview_rename is disabled until workspace preload completes successfully."
+    return (
+        f"{warning['message']} preview_rename is disabled until workspace "
+        "preload completes successfully. Call workspace_status for details."
+    )
+
+
+def workspace_status_payload() -> dict[str, Any]:
+    """Return the current workspace preload status as a public payload."""
+    state = workspace_preload_state
+    stats = state.stats
+    failures = [
+        {
+            "project": project,
+            "representativeFile": stats.representative_files.get(project),
+            "message": message,
+        }
+        for project, message in sorted(stats.failures.items())
+    ]
+    return {
+        "status": state.status,
+        "generation": state.generation,
+        "reason": state.reason,
+        "error": state.error,
+        "totalProjects": len(stats.discovered_projects),
+        "loadedProjectCount": len(stats.loaded_projects),
+        "skippedProjectCount": len(stats.skipped_projects),
+        "failedProjectCount": len(stats.failures),
+        "discoveredProjects": stats.discovered_projects,
+        "loadedProjects": stats.loaded_projects,
+        "skippedProjects": stats.skipped_projects,
+        "failures": failures,
+        "representativeFiles": stats.representative_files,
+        "loadedConfigKeys": stats.loaded_config_keys,
+        "heldOpenRepresentativeUris": sorted(
+            workspace_preload_state.open_file_uris or set(stats.held_open_uris)
+        ),
+    }
 
 
 async def _run_workspace_preload(
@@ -365,6 +429,11 @@ async def preload_workspace_projects(
     for project in projects:
         project_key = project.tsconfig_path.relative_to(root).as_posix()
         representative = project.representative_file
+        stats.representative_files[project_key] = (
+            representative.relative_to(root).as_posix()
+            if representative is not None
+            else None
+        )
         if representative is None:
             stats.skipped_projects[project_key] = "No representative source file found"
             logger.info("Skipping workspace project with no source file: %s", project_key)
@@ -372,13 +441,17 @@ async def preload_workspace_projects(
             continue
 
         file_uri = representative.as_uri()
+        opened = False
+        keep_open = False
         try:
             await open_file(client, representative, file_uri)
-            try:
-                await ensure_project_loaded(client, representative)
-            finally:
-                await close_file(client, file_uri)
+            opened = True
+            config_key = await ensure_project_loaded(client, representative)
+            stats.loaded_config_keys[project_key] = config_key
+            _validate_preload_config_key(config_key, project.tsconfig_path)
             stats.loaded_projects.append(project_key)
+            workspace_preload_state.open_file_uris.add(file_uri)
+            keep_open = True
             logger.debug("Preloaded TypeScript workspace project: %s", project_key)
         except Exception as exc:
             stats.failures[project_key] = str(exc)
@@ -387,10 +460,32 @@ async def preload_workspace_projects(
                 project_key,
                 exc,
             )
+        finally:
+            if opened and not keep_open:
+                await close_file(client, file_uri)
         _record_workspace_preload_stats(stats)
 
     _record_workspace_preload_stats(stats)
     return stats
+
+
+def _validate_preload_config_key(config_key: str, expected_tsconfig: Path) -> None:
+    expected = expected_tsconfig.expanduser().resolve(strict=True)
+    if config_key.startswith("inferred:"):
+        raise ProjectLoadError(
+            "Representative file loaded as an inferred TypeScript project "
+            f"instead of expected config {expected}"
+        )
+    try:
+        actual = Path(config_key).expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise ProjectLoadError(
+            f"Loaded TypeScript config {config_key!r} could not be resolved"
+        ) from exc
+    if actual != expected:
+        raise ProjectLoadError(
+            f"Loaded TypeScript config {actual} but expected {expected}"
+        )
 
 
 async def ensure_project_loaded(client: VtslsClient, file_path: str | Path) -> str:
@@ -754,10 +849,14 @@ This server auto-discovers `pnpm-workspace.yaml` and `package.json` workspaces
 and preloads package `tsconfig.json` projects in the background. Start it at the
 monorepo root for cross-package results; if started inside one package, sibling
 packages stay outside the security boundary. While preload is incomplete,
-`references` and `implementation` may include a warning that cross-package
-results are incomplete, and `preview_rename` refuses to run until preload
-finishes successfully. `restart_server` schedules workspace preload after
-tsconfig or workspace manifest changes.
+`references` and `implementation` may include a structured
+`WORKSPACE_PRELOAD_INCOMPLETE` warning that cross-package results are
+incomplete, and `preview_rename` refuses to run until preload finishes
+successfully. Use `workspace_status` to inspect loaded projects, selected
+representative files, held-open files, and preload failures. After fixing
+tsconfig or workspace manifest issues, call `restart_server` to rerun preload in
+the background. Representative files are intentionally kept open so vtsls
+retains the loaded package projects.
 
 Use `symbol_info` for quick hover-style signature/type text and docs at a
 position. Use `type_info_of_reference` when you need structured TypeScript

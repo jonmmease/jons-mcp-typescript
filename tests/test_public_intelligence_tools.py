@@ -11,6 +11,7 @@ from jons_mcp_typescript.schemas import (
     DiagnosticsResult,
     RenamePreviewError,
     RenamePreviewResult,
+    WorkspaceStatusResult,
 )
 from jons_mcp_typescript.tools import intelligence
 from jons_mcp_typescript.workspace import WorkspacePreloadStats
@@ -36,9 +37,11 @@ class FakeIntelligenceClient:
 def test_preview_rename_return_annotation_uses_public_models():
     rename_hints = get_type_hints(intelligence.preview_rename)
     diagnostics_hints = get_type_hints(intelligence.diagnostics)
+    workspace_status_hints = get_type_hints(intelligence.workspace_status)
 
     assert rename_hints["return"] == RenamePreviewResult | RenamePreviewError
     assert diagnostics_hints["return"] == DiagnosticsResult
+    assert workspace_status_hints["return"] == WorkspaceStatusResult
     assert "scope" not in inspect.signature(intelligence.diagnostics).parameters
 
 
@@ -163,11 +166,60 @@ async def test_preview_rename_blocks_while_workspace_preload_is_incomplete(
 
         assert isinstance(result, RenamePreviewError)
         assert "preview_rename is disabled" in result.error
+        assert "workspace_status" in result.error
         assert ensure_calls == ["src/main.ts"]
         assert fake.calls == []
         assert opened == []
         assert closed == []
         assert project_loads == []
+    finally:
+        server.reset_workspace_preload_state()
+
+
+@pytest.mark.asyncio
+async def test_workspace_status_exposes_preload_details():
+    server.reset_workspace_preload_state()
+    server.workspace_preload_state.status = "complete"
+    server.workspace_preload_state.generation = 3
+    server.workspace_preload_state.reason = "restart"
+    server.workspace_preload_state.stats = WorkspacePreloadStats(
+        discovered_projects=[
+            "packages/a/tsconfig.json",
+            "packages/b/tsconfig.json",
+        ],
+        loaded_projects=["packages/a/tsconfig.json"],
+        skipped_projects={"packages/c/tsconfig.json": "No representative source file found"},
+        failures={"packages/b/tsconfig.json": "project boom"},
+        representative_files={
+            "packages/a/tsconfig.json": "packages/a/src/index.ts",
+            "packages/b/tsconfig.json": "packages/b/src/index.ts",
+            "packages/c/tsconfig.json": None,
+        },
+        loaded_config_keys={
+            "packages/a/tsconfig.json": "/project/packages/a/tsconfig.json"
+        },
+        held_open_uris=["file:///project/packages/a/src/index.ts"],
+    )
+    server.workspace_preload_state.open_file_uris.add(
+        "file:///project/packages/a/src/index.ts"
+    )
+    try:
+        result = await intelligence.workspace_status()
+
+        assert result.status == "complete"
+        assert result.generation == 3
+        assert result.reason == "restart"
+        assert result.totalProjects == 2
+        assert result.loadedProjectCount == 1
+        assert result.failedProjectCount == 1
+        assert result.skippedProjectCount == 1
+        assert result.loadedProjects == ["packages/a/tsconfig.json"]
+        assert result.failures[0].project == "packages/b/tsconfig.json"
+        assert result.failures[0].representativeFile == "packages/b/src/index.ts"
+        assert result.failures[0].message == "project boom"
+        assert result.heldOpenRepresentativeUris == [
+            "file:///project/packages/a/src/index.ts"
+        ]
     finally:
         server.reset_workspace_preload_state()
 

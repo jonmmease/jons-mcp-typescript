@@ -556,6 +556,10 @@ def _write_monorepo_ts_project(
             ),
             encoding="utf-8",
         )
+        (package_dir / "jest.config.js").write_text(
+            "export default {};\n",
+            encoding="utf-8",
+        )
 
     (project_root / "packages" / "common" / "src" / "errors.ts").write_text(
         """export interface TraceIdError {
@@ -1480,6 +1484,34 @@ class TestMonorepoProjectReferences:
                 "packages/server/tsconfig.json",
                 "packages/worker/tsconfig.json",
             }
+            assert stats.representative_files == {
+                "packages/common/tsconfig.json": "packages/common/src/errors.ts",
+                "packages/server/tsconfig.json": "packages/server/src/handler.ts",
+                "packages/worker/tsconfig.json": "packages/worker/src/worker.ts",
+            }
+            assert set(stats.held_open_uris) == {
+                (
+                    pnpm_monorepo_ts_project
+                    / "packages"
+                    / "common"
+                    / "src"
+                    / "errors.ts"
+                ).resolve().as_uri(),
+                (
+                    pnpm_monorepo_ts_project
+                    / "packages"
+                    / "server"
+                    / "src"
+                    / "handler.ts"
+                ).resolve().as_uri(),
+                (
+                    pnpm_monorepo_ts_project
+                    / "packages"
+                    / "worker"
+                    / "src"
+                    / "worker.ts"
+                ).resolve().as_uri(),
+            }
 
             common_text = (
                 pnpm_monorepo_ts_project / "packages" / "common" / "src" / "errors.ts"
@@ -1528,7 +1560,27 @@ class TestMonorepoProjectReferences:
                 },
                 "preview_rename after workspace preload",
             )
+            await asyncio.sleep(0.5)
+            stable_references_result = await language.references(
+                "packages/common/src/errors.ts",
+                include_declaration=True,
+                **position_of(common_text, "createTraceIdError"),
+            )
+            assert_monorepo_paths_include(
+                location_project_paths(
+                    stable_references_result,
+                    pnpm_monorepo_ts_project,
+                ),
+                {
+                    "packages/common/src/errors.ts",
+                    "packages/common/src/index.ts",
+                    "packages/server/src/handler.ts",
+                    "packages/worker/src/worker.ts",
+                },
+                "references after preload settled",
+            )
         finally:
+            await server_state.close_workspace_preload_files(client)
             await client.shutdown()
             server_state._project_root = None
             server_state.vtsls = None

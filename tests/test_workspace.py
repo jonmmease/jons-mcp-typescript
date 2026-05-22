@@ -164,6 +164,70 @@ def test_representative_source_skips_build_outputs_and_declarations(tmp_path: Pa
     assert find_representative_source(package_dir) == package_dir / "src" / "index.ts"
 
 
+def test_representative_source_prefers_src_over_root_config(tmp_path: Path):
+    package_dir = tmp_path / "pkg"
+    (package_dir / "src").mkdir(parents=True)
+    (package_dir / "jest.config.js").write_text(
+        "export default {};\n",
+        encoding="utf-8",
+    )
+    (package_dir / "src" / "index.ts").write_text(
+        "export const value = 1;\n",
+        encoding="utf-8",
+    )
+    tsconfig = package_dir / "tsconfig.json"
+    tsconfig.write_text('{"include": ["src/**/*"]}', encoding="utf-8")
+
+    assert (
+        find_representative_source(package_dir, tsconfig_path=tsconfig)
+        == package_dir / "src" / "index.ts"
+    )
+
+
+def test_representative_source_uses_tsconfig_include_without_src(tmp_path: Path):
+    package_dir = tmp_path / "pkg"
+    (package_dir / "lib").mkdir(parents=True)
+    (package_dir / "jest.config.js").write_text(
+        "export default {};\n",
+        encoding="utf-8",
+    )
+    (package_dir / "lib" / "entry.ts").write_text(
+        "export const value = 1;\n",
+        encoding="utf-8",
+    )
+    tsconfig = package_dir / "tsconfig.json"
+    tsconfig.write_text('{"include": ["lib/**/*"]}', encoding="utf-8")
+
+    assert (
+        find_representative_source(package_dir, tsconfig_path=tsconfig)
+        == package_dir / "lib" / "entry.ts"
+    )
+
+
+def test_representative_source_respects_direct_tsconfig_exclude(tmp_path: Path):
+    package_dir = tmp_path / "pkg"
+    (package_dir / "lib").mkdir(parents=True)
+    (package_dir / "lib" / "generated").mkdir()
+    (package_dir / "lib" / "generated" / "a.ts").write_text(
+        "export const generated = 1;\n",
+        encoding="utf-8",
+    )
+    (package_dir / "lib" / "stable.ts").write_text(
+        "export const stable = 1;\n",
+        encoding="utf-8",
+    )
+    tsconfig = package_dir / "tsconfig.json"
+    tsconfig.write_text(
+        '{"include": ["lib/**/*"], "exclude": ["lib/generated"]}',
+        encoding="utf-8",
+    )
+
+    assert (
+        find_representative_source(package_dir, tsconfig_path=tsconfig)
+        == package_dir / "lib" / "stable.ts"
+    )
+
+
 @pytest.mark.asyncio
 async def test_preload_workspace_projects_records_loaded_skipped_and_failures(
     tmp_path: Path,
@@ -191,30 +255,134 @@ async def test_preload_workspace_projects_records_loaded_skipped_and_failures(
         loaded.append(path)
         if "failed" in path.parts:
             raise RuntimeError("project boom")
-        return str(path.parent / "tsconfig.json")
+        return str(path.parent.parent / "tsconfig.json")
 
     monkeypatch.setattr(server, "open_file", open_file)
     monkeypatch.setattr(server, "close_file", close_file)
     monkeypatch.setattr(server, "ensure_project_loaded", ensure_project_loaded)
 
-    stats = await server.preload_workspace_projects(object(), tmp_path)  # type: ignore[arg-type]
+    server.reset_workspace_preload_state()
+    try:
+        stats = await server.preload_workspace_projects(object(), tmp_path)  # type: ignore[arg-type]
 
-    assert stats.discovered_projects == [
-        "packages/failed/tsconfig.json",
-        "packages/loaded/tsconfig.json",
-        "packages/skipped/tsconfig.json",
+        assert stats.discovered_projects == [
+            "packages/failed/tsconfig.json",
+            "packages/loaded/tsconfig.json",
+            "packages/skipped/tsconfig.json",
+        ]
+        assert stats.loaded_projects == ["packages/loaded/tsconfig.json"]
+        assert stats.skipped_projects == {
+            "packages/skipped/tsconfig.json": "No representative source file found"
+        }
+        assert stats.failures == {"packages/failed/tsconfig.json": "project boom"}
+        assert stats.representative_files == {
+            "packages/failed/tsconfig.json": "packages/failed/src/index.ts",
+            "packages/loaded/tsconfig.json": "packages/loaded/src/index.ts",
+            "packages/skipped/tsconfig.json": None,
+        }
+        assert stats.loaded_config_keys == {
+            "packages/loaded/tsconfig.json": str(
+                tmp_path / "packages" / "loaded" / "tsconfig.json"
+            )
+        }
+        assert opened == [
+            (tmp_path / "packages" / "failed" / "src" / "index.ts").as_uri(),
+            (tmp_path / "packages" / "loaded" / "src" / "index.ts").as_uri(),
+        ]
+        assert closed == [
+            (tmp_path / "packages" / "failed" / "src" / "index.ts").as_uri()
+        ]
+        assert stats.held_open_uris == [
+            (tmp_path / "packages" / "loaded" / "src" / "index.ts").as_uri()
+        ]
+        assert loaded == [
+            tmp_path / "packages" / "failed" / "src" / "index.ts",
+            tmp_path / "packages" / "loaded" / "src" / "index.ts",
+        ]
+        assert server.workspace_preload_stats == stats
+    finally:
+        server.reset_workspace_preload_state()
+
+
+@pytest.mark.asyncio
+async def test_preload_rejects_inferred_or_mismatched_project_configs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "package.json").write_text(
+        '{"workspaces": ["packages/*"]}',
+        encoding="utf-8",
+    )
+    write_package_project(tmp_path / "packages" / "inferred")
+    write_package_project(tmp_path / "packages" / "mismatched")
+
+    closed: list[str] = []
+
+    async def open_file(client: Any, path: Path, uri: str) -> None:
+        pass
+
+    async def close_file(client: Any, uri: str) -> None:
+        closed.append(uri)
+
+    async def ensure_project_loaded(client: Any, path: Path) -> str:
+        if "inferred" in path.parts:
+            return f"inferred:{path}"
+        return str(tmp_path / "other" / "tsconfig.json")
+
+    monkeypatch.setattr(server, "open_file", open_file)
+    monkeypatch.setattr(server, "close_file", close_file)
+    monkeypatch.setattr(server, "ensure_project_loaded", ensure_project_loaded)
+
+    server.reset_workspace_preload_state()
+    try:
+        stats = await server.preload_workspace_projects(object(), tmp_path)  # type: ignore[arg-type]
+
+        assert stats.loaded_projects == []
+        assert set(stats.failures) == {
+            "packages/inferred/tsconfig.json",
+            "packages/mismatched/tsconfig.json",
+        }
+        assert "inferred TypeScript project" in stats.failures[
+            "packages/inferred/tsconfig.json"
+        ]
+        assert "but expected" in stats.failures[
+            "packages/mismatched/tsconfig.json"
+        ]
+        assert sorted(closed) == sorted(
+            [
+                (tmp_path / "packages" / "inferred" / "src" / "index.ts").as_uri(),
+                (tmp_path / "packages" / "mismatched" / "src" / "index.ts").as_uri(),
+            ]
+        )
+        assert stats.held_open_uris == []
+    finally:
+        server.reset_workspace_preload_state()
+
+
+@pytest.mark.asyncio
+async def test_close_workspace_preload_files_closes_retained_representatives(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    closed: list[str] = []
+
+    async def close_file(client: Any, uri: str) -> None:
+        closed.append(uri)
+
+    monkeypatch.setattr(server, "close_file", close_file)
+    server.reset_workspace_preload_state()
+    server.workspace_preload_state.open_file_uris.update(
+        {"file:///project/a.ts", "file:///project/b.ts"}
+    )
+    server.workspace_preload_state.stats.held_open_uris = [
+        "file:///project/a.ts",
+        "file:///project/b.ts",
     ]
-    assert stats.loaded_projects == ["packages/loaded/tsconfig.json"]
-    assert stats.skipped_projects == {
-        "packages/skipped/tsconfig.json": "No representative source file found"
-    }
-    assert stats.failures == {"packages/failed/tsconfig.json": "project boom"}
-    assert sorted(opened) == sorted(closed)
-    assert loaded == [
-        tmp_path / "packages" / "failed" / "src" / "index.ts",
-        tmp_path / "packages" / "loaded" / "src" / "index.ts",
-    ]
-    assert server.workspace_preload_stats == stats
+
+    await server.close_workspace_preload_files(object())  # type: ignore[arg-type]
+
+    assert closed == ["file:///project/a.ts", "file:///project/b.ts"]
+    assert server.workspace_preload_state.open_file_uris == set()
+    assert server.workspace_preload_state.stats.held_open_uris == []
 
 
 @pytest.mark.asyncio
@@ -268,7 +436,9 @@ async def test_background_preload_failure_and_cancellation_states(
 
         assert server.workspace_preload_state.status == "failed"
         assert server.workspace_preload_state.error == "workspace boom"
-        assert "workspace boom" in (server.workspace_preload_warning() or "")
+        failed_warning = server.workspace_preload_warning()
+        assert failed_warning is not None
+        assert "workspace boom" in failed_warning["message"]
 
         started = asyncio.Event()
         release = asyncio.Event()
@@ -288,7 +458,9 @@ async def test_background_preload_failure_and_cancellation_states(
         await server.cancel_workspace_preload()
 
         assert server.workspace_preload_state.status == "cancelled"
-        assert "cancelled" in (server.workspace_preload_warning() or "")
+        cancelled_warning = server.workspace_preload_warning()
+        assert cancelled_warning is not None
+        assert "cancelled" in cancelled_warning["message"]
     finally:
         if release:
             release.set()

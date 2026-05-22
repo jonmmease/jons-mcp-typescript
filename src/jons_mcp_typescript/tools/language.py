@@ -82,7 +82,9 @@ def _with_navigation_warning(result: NavigationResult) -> NavigationResult:
     warning = workspace_preload_warning()
     if not warning:
         return result
-    return result.model_copy(update={"warnings": [warning]})
+    payload = result.model_dump(exclude_none=True)
+    payload["warnings"] = [warning]
+    return NavigationResult.model_validate(payload)
 
 
 def _references_payload_with_warning(payload: dict[str, Any]) -> dict[str, Any]:

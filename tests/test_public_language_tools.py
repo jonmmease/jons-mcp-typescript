@@ -350,9 +350,12 @@ async def test_semantic_tools_warn_while_workspace_preload_is_incomplete(
         )
 
         assert references_result.warnings
-        assert "still running" in references_result.warnings[0]
+        assert references_result.warnings[0].code == "WORKSPACE_PRELOAD_INCOMPLETE"
+        assert "still running" in references_result.warnings[0].message
+        assert references_result.warnings[0].detailsTool == "workspace_status"
         assert implementation_result.warnings
-        assert "still running" in implementation_result.warnings[0]
+        assert implementation_result.warnings[0].code == "WORKSPACE_PRELOAD_INCOMPLETE"
+        assert "still running" in implementation_result.warnings[0].message
 
         server.workspace_preload_state.status = "complete"
         server.workspace_preload_state.stats = WorkspacePreloadStats()
